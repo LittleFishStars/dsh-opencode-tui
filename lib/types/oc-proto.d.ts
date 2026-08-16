@@ -58,6 +58,16 @@ export declare function makeSessionInfo(init: {
     title?: string;
     agent?: string;
     model?: ModelRef;
+    cost?: number;
+    tokens?: {
+        input: number;
+        output: number;
+        reasoning: number;
+        cache: {
+            read: number;
+            write: number;
+        };
+    };
     created?: number;
     updated?: number;
 }): SessionInfo;
@@ -325,4 +335,4 @@ export declare function legacyModelFromV2(info: {
     providerID: string;
     name: string;
     family?: string;
-}): LegacyModel;
+}, contextWindow?: number): LegacyModel;

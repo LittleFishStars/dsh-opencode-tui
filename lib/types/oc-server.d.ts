@@ -31,6 +31,8 @@ export declare class OcServer {
     private http;
     private port;
     private modelCache;
+    /** 最近一次请求头里的模型上下文窗口（maxTokens；供 limit.context 百分比计算） */
+    private modelContext;
     /** 历史会话重建 promise：会话列表/详情请求等待它完成，避免 hydrate 前返回空列表。 */
     private hydratePromise;
     constructor(ctx: Context, opts: OcServerOptions);

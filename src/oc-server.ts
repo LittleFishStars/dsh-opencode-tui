@@ -157,6 +157,8 @@ interface PendingAssistant {
   tools: Map<string, PendingTool>;
   finish?: string;
   endedAt?: number;
+  /** DSH assistant/message 事件的 usage（token 统计；turn/end 时写入消息 info） */
+  tokens?: { input: number; output: number; reasoning: number; cacheRead: number; cacheWrite: number };
 }
 
 interface PendingTool {
@@ -212,6 +214,8 @@ export class OcServer {
   private http: ReturnType<typeof createServer>;
   private port = 0;
   private modelCache: ModelRef | undefined;
+  /** 最近一次请求头里的模型上下文窗口（maxTokens；供 limit.context 百分比计算） */
+  private modelContext: number | undefined;
   /** 历史会话重建 promise：会话列表/详情请求等待它完成，避免 hydrate 前返回空列表。 */
   private hydratePromise: Promise<void> | undefined;
 
@@ -549,6 +553,31 @@ export class OcServer {
         }
         break;
       }
+      case "assistant/message": {
+        // DSH 完成一条 assistant 消息：记录 usage（token 统计，供侧边栏/输入框 meta 显示）
+        const pending = state.pending;
+        if (pending) {
+          const data = event.data as { usage?: { inputTokens?: number; outputTokens?: number; reasoningTokens?: number; cacheReadTokens?: number; cacheWriteTokens?: number } };
+          const u = data.usage;
+          if (u) {
+            pending.tokens = {
+              input: u.inputTokens ?? 0,
+              output: u.outputTokens ?? 0,
+              reasoning: u.reasoningTokens ?? 0,
+              cacheRead: u.cacheReadTokens ?? 0,
+              cacheWrite: u.cacheWriteTokens ?? 0,
+            };
+          }
+        }
+        break;
+      }
+      case "request/header": {
+        // 记录模型上下文窗口（maxTokens），用于 limit.context 的百分比计算
+        const data = event.data as { header?: { config?: { maxTokens?: number } } };
+        const maxTokens = data.header?.config?.maxTokens;
+        if (typeof maxTokens === "number" && maxTokens > 0) this.modelContext = maxTokens;
+        break;
+      }
       case "turn/end": {
         const pending = state.pending;
         if (pending) {
@@ -562,6 +591,17 @@ export class OcServer {
             msg.info.time.updated = pending.endedAt;
             msg.info.time.completed = pending.endedAt;
             msg.info.finish = finish;
+            // usage → tokens（侧边栏 Context/命中率、输入框 meta 行的数据源）
+            if (pending.tokens) {
+              const t = pending.tokens;
+              msg.info.tokens = {
+                input: t.input,
+                output: t.output,
+                reasoning: t.reasoning,
+                cache: { read: t.cacheRead, write: t.cacheWrite },
+              };
+              msg.info.cost = 0;
+            }
             if (!msg.info.parentID) {
               const userMsg = [...state.messages].reverse().find((m) => m.info.role === "user");
               msg.info.parentID = userMsg?.info.id;
@@ -633,6 +673,11 @@ export class OcServer {
         this.pushSessionEvent(state, {
           type: "session.status",
           properties: { sessionID: state.id, status: { type: "idle" } },
+        });
+        // 会话级 token/cost 聚合变化（侧边栏 Context 区刷新）
+        this.pushSessionEvent(state, {
+          type: "session.updated",
+          properties: { info: this.infoOf(state) },
         });
         break;
       }
@@ -869,6 +914,11 @@ export class OcServer {
         const payload = body ? safeParse(body) : {};
         const id = (payload.id as string) ?? ocId("ses");
         const state = this.getOrCreateSession(id, this.opts.directory);
+        // 新会话进 sync.data.session（TUI 的 session 页/侧边栏依赖它）
+        this.pushSessionEvent(state, {
+          type: "session.updated",
+          properties: { info: this.infoOf(state) },
+        });
         this.sendJson(res, 200, located(this.infoOf(state), this.opts.directory));
         return;
       }
@@ -888,6 +938,11 @@ export class OcServer {
           .then((dshId) => {
             if (dshId) this.bindDshSession(state.id, dshId);
           });
+        // 会话更新（updatedAt）进 sync.data.session
+        this.pushSessionEvent(state, {
+          type: "session.updated",
+          properties: { info: this.infoOf(state) },
+        });
         this.sendJson(res, 200, located(admitted, this.opts.directory));
         return;
       }
@@ -1142,6 +1197,11 @@ export class OcServer {
       const payload = body ? safeParse(body) : {};
       const id = (payload.id as string) ?? ocId("ses");
       const state = this.getOrCreateSession(id, this.opts.directory);
+      // 新会话进 sync.data.session（TUI 的 session 页/侧边栏依赖它）
+      this.pushSessionEvent(state, {
+        type: "session.updated",
+        properties: { info: this.infoOf(state) },
+      });
       this.sendJson(res, 200, this.legacySession(state));
       return;
     }
@@ -1243,6 +1303,11 @@ export class OcServer {
           .then((dshId) => {
             if (dshId) this.bindDshSession(state.id, dshId);
           });
+        // 会话更新（updatedAt）进 sync.data.session
+        this.pushSessionEvent(state, {
+          type: "session.updated",
+          properties: { info: this.infoOf(state) },
+        });
         // 响应占位 assistant 消息（TUI 期待 {info, parts}）
         const pendingId = ocId("msg");
         const sel2 = this.selection();
@@ -1346,12 +1411,26 @@ export class OcServer {
   // ── 响应构造 ─────────────────────────────────────────────────────────────
 
   private infoOf(state: SessionState): SessionInfo {
+    // 聚合会话级 token/成本（侧边栏 Context 区、输入框 meta 行的 session.cost）
+    const tokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
+    let cost = 0;
+    for (const m of state.messages) {
+      if (m.info.role !== "assistant" || !m.info.tokens) continue;
+      tokens.input += m.info.tokens.input;
+      tokens.output += m.info.tokens.output;
+      tokens.reasoning += m.info.tokens.reasoning;
+      tokens.cache.read += m.info.tokens.cache.read;
+      tokens.cache.write += m.info.tokens.cache.write;
+      cost += m.info.cost ?? 0;
+    }
     return makeSessionInfo({
       id: state.id,
       directory: state.directory,
       title: state.title,
       agent: state.currentAgent,
       model: this.selection(),
+      cost,
+      tokens,
       created: state.createdAt,
       updated: state.updatedAt,
     });
@@ -1392,7 +1471,7 @@ export class OcServer {
   } | undefined {
     const sel = this.selection();
     if (!sel) return undefined;
-    const model = legacyModelFromV2({ id: sel.id, providerID: sel.providerID, name: sel.id });
+    const model = legacyModelFromV2({ id: sel.id, providerID: sel.providerID, name: sel.id }, this.modelContext);
     return {
       id: sel.providerID,
       name: sel.providerID,

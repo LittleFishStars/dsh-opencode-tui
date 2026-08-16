@@ -85,6 +85,8 @@ export function makeSessionInfo(init: {
   title?: string;
   agent?: string;
   model?: ModelRef;
+  cost?: number;
+  tokens?: { input: number; output: number; reasoning: number; cache: { read: number; write: number } };
   created?: number;
   updated?: number;
 }): SessionInfo {
@@ -94,8 +96,8 @@ export function makeSessionInfo(init: {
     projectID: projectId(init.directory),
     agent: init.agent,
     model: init.model,
-    cost: 0,
-    tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+    cost: init.cost ?? 0,
+    tokens: init.tokens ?? { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
     time: { created: init.created ?? now, updated: init.updated ?? now },
     title: init.title ?? "New Session",
     location: { directory: init.directory },
@@ -491,18 +493,21 @@ export interface LegacyModel {
 }
 
 /** 把 v2 Model.Info 转成旧协议 Model（/config/providers 的 models 表）。 */
-export function legacyModelFromV2(info: {
-  id: string;
-  providerID: string;
-  name: string;
-  family?: string;
-}): LegacyModel {
+export function legacyModelFromV2(
+  info: {
+    id: string;
+    providerID: string;
+    name: string;
+    family?: string;
+  },
+  contextWindow?: number,
+): LegacyModel {
   return {
     id: info.id,
     providerID: info.providerID,
     family: info.family,
     name: info.name,
-    limit: { context: 131072, output: 65536 },
+    limit: { context: contextWindow ?? 131072, output: 65536 },
     cost: { input: 0, output: 0 },
     attachment: true,
     reasoning: true,
