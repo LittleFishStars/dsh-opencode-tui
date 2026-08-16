@@ -58,6 +58,12 @@ export declare class OcServer {
     /** 推旧协议事件（{directory, payload: {type, properties}}）到全局事件流。 */
     private pushLegacyEvent;
     private pushSessionEvent;
+    /** 会话变更通知（新会话进 sync.data.session、聚合 token/cost 刷新）。 */
+    private touchSession;
+    /** 消息请求的模型切换：payload.model → 会话当前模型。 */
+    private applyRequestModel;
+    /** 触发 DSH agent（preset/model 随消息传递）并绑定会话、通知变更。 */
+    private runPrompt;
     private sessionOr404;
     private getOrCreateSession;
     /** 把 DSH 会话视图重建为 opencode 会话状态（进程内；ocSessionId 由 dshSessionId 稳定哈希）。 */
@@ -93,6 +99,10 @@ export declare class OcServer {
     private toolPart;
     private findMessage;
     private findByDsh;
+    /** v2 端点（/api/*）。返回是否已处理。 */
+    private handleApi;
+    /** 旧协议 /session/:id/* 子路由。返回是否已处理。 */
+    private handleLegacySession;
     private handle;
     private infoOf;
     /** 旧协议 Session（/session 列表） */
