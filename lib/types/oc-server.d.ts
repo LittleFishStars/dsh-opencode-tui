@@ -54,6 +54,18 @@ export declare class OcServer {
         callId?: string;
         reason?: string;
     }): Promise<"allowed-once" | "rejected"> | undefined;
+    /** DSH user question → opencode question 对话框；返回应答（labels 按问题顺序）。 */
+    handleQuestion(dshSessionId: string, items: Array<{
+        id: string;
+        question: string;
+        detail?: string;
+        header?: string;
+        options?: Array<{
+            label: string;
+            description?: string;
+        }>;
+        multiSelect?: boolean;
+    }>): Promise<unknown> | undefined;
     private toolPart;
     private findMessage;
     private findByDsh;

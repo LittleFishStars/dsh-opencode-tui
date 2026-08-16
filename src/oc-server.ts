@@ -110,6 +110,8 @@ interface SessionState {
   sse: Set<ServerResponse>;
   /** 挂起的审批（permissionID → 决议回调） */
   permissions: Map<string, (outcome: "allowed-once" | "rejected") => void>;
+  /** 挂起的用户提问（requestID → 应答回调） */
+  questions: Map<string, (answer: unknown) => void>;
 }
 
 interface PendingAssistant {
@@ -274,6 +276,7 @@ export class OcServer {
         messages: [],
         sse: new Set(),
         permissions: new Map(),
+        questions: new Map(),
       };
       this.sessions.set(id, state);
     }
@@ -603,6 +606,51 @@ export class OcServer {
     });
   }
 
+  /** DSH user question → opencode question 对话框；返回应答（labels 按问题顺序）。 */
+  handleQuestion(
+    dshSessionId: string,
+    items: Array<{ id: string; question: string; detail?: string; header?: string; options?: Array<{ label: string; description?: string }>; multiSelect?: boolean }>,
+  ): Promise<unknown> | undefined {
+    const state = this.findByDsh(dshSessionId);
+    if (!state) {
+      ocLog(`[oc-server] question: no session for ${dshSessionId}`);
+      return undefined;
+    }
+    ocLog(`[oc-server] question: ${items.length} item(s) for ${state.id}`);
+    const requestID = `ques_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const questions = items.map((item) => ({
+      question: item.question,
+      header: item.header ?? item.question.slice(0, 30),
+      ...(item.detail ? { detail: item.detail } : {}),
+      ...(item.options && item.options.length > 0
+        ? { options: item.options.map((o) => ({ label: o.label, ...(o.description ? { hint: o.description } : {}) })) }
+        : {}),
+      ...(item.multiSelect ? { multiple: true } : {}),
+    }));
+    return new Promise((resolve) => {
+      state.questions.set(requestID, (rawAnswers: unknown) => {
+        const labels = Array.isArray(rawAnswers) ? (rawAnswers as unknown[]) : [];
+        const answers = items.map((item, i) => ({
+          id: item.id,
+          selected: Array.isArray(labels[i]) ? (labels[i] as string[]) : [],
+        }));
+        resolve({ answers });
+      });
+      this.pushSessionEvent(state, {
+        type: "question.asked",
+        properties: { id: requestID, sessionID: state.id, questions },
+      });
+      // 超时兜底：60s 无应答按空答案结算
+      setTimeout(() => {
+        const pending = state.questions.get(requestID);
+        if (pending) {
+          state.questions.delete(requestID);
+          pending({ answers: [] });
+        }
+      }, 60_000).unref?.();
+    });
+  }
+
   private toolPart(state: SessionState, pending: PendingAssistant, tool: PendingTool): LegacyToolPart {
     return {
       id: tool.callID,
@@ -828,6 +876,46 @@ export class OcServer {
           this.pushSessionEvent(state, {
             type: "permission.replied",
             properties: { sessionID: state.id, permissionID: requestID, response: reply ?? "reject" },
+          });
+          break;
+        }
+      }
+      this.sendJson(res, 200, {});
+      return;
+    }
+
+    // ── v2 question reply/reject ──
+    const qReply = path.match(/^\/question\/([^/]+)\/reply$/);
+    if (qReply && method === "POST") {
+      const requestID = qReply[1]!;
+      const payload = body ? safeParse(body) : {};
+      const answers = Array.isArray(payload.answers) ? payload.answers : [];
+      for (const state of this.sessions.values()) {
+        const resolve = state.questions.get(requestID);
+        if (resolve) {
+          state.questions.delete(requestID);
+          resolve(answers);
+          this.pushSessionEvent(state, {
+            type: "question.replied",
+            properties: { sessionID: state.id, requestID },
+          });
+          break;
+        }
+      }
+      this.sendJson(res, 200, {});
+      return;
+    }
+    const qReject = path.match(/^\/question\/([^/]+)\/reject$/);
+    if (qReject && method === "POST") {
+      const requestID = qReject[1]!;
+      for (const state of this.sessions.values()) {
+        const resolve = state.questions.get(requestID);
+        if (resolve) {
+          state.questions.delete(requestID);
+          resolve({ answers: [] });
+          this.pushSessionEvent(state, {
+            type: "question.rejected",
+            properties: { sessionID: state.id, requestID },
           });
           break;
         }
