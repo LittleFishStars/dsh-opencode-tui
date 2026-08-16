@@ -222,6 +222,8 @@ export interface OcServerOptions {
       diffs: Array<{ file: string; before: string; after: string; additions: number; deletions: number }>;
     }>
   >;
+  /** 删除 DSH 会话（释放活跃 agent + 删除持久化数据）。由 plugin 提供。 */
+  onDeleteSession?: (dshSessionId: string) => Promise<void>;
 }
 
 // ── 日志：写文件（终端保持干净；请求级日志需 DSH_OC_DEBUG=1）─────────────
@@ -1176,6 +1178,12 @@ export class OcServer {
       this.sendJson(res, 200, located(this.infoOf(state), this.opts.directory));
       return true;
     }
+    const v2SessionDelete = path.match(/^\/api\/session\/([^/]+)$/);
+    if (v2SessionDelete && method === "DELETE") {
+      const ok = await this.deleteSession(v2SessionDelete[1]!);
+      this.sendJson(res, ok ? 200 : 500, located(ok, this.opts.directory));
+      return true;
+    }
 
     // ── v2 permission reply ──
     const permReply = path.match(/^\/permission\/([^/]+)\/reply$/);
@@ -1252,6 +1260,12 @@ export class OcServer {
       const sessionId = legacySessionMatch[1]!;
       const sub = legacySessionMatch[2];
       if (method === "GET") await this.waitHydrate();
+      if (method === "DELETE" && !sub) {
+        // 删除会话（会话列表 Ctrl+d）：移除内存状态 + 删 DSH 数据 + 通知 TUI
+        const ok = await this.deleteSession(sessionId);
+        this.sendJson(res, ok ? 200 : 500, ok);
+        return true;
+      }
       if (method === "GET" && !sub) {
         const state = this.sessions.get(sessionId);
         if (this.sessionOr404(state, res)) {
@@ -1669,6 +1683,36 @@ export class OcServer {
       state.updatedAt = Date.now();
     }
   }
+
+  /**
+   * 删除会话（DELETE /session/:id）：从内存移除 + 通知 TUI + 删除 DSH 持久化数据。
+   * 返回是否成功（false = 会话不存在或删除失败）。
+   */
+  async deleteSession(sessionId: string): Promise<boolean> {
+    const state = this.sessions.get(sessionId);
+    if (!state) return true; // 已不存在视为成功
+    // 先删 DSH 侧数据（可能抛错），成功后才移除内存状态
+    if (state.dshSessionId && this.opts.onDeleteSession) {
+      try {
+        await this.opts.onDeleteSession(state.dshSessionId);
+      } catch (error) {
+        ocLog(`[oc-server] delete session ${sessionId} dsh side failed: ${error instanceof Error ? error.message : String(error)}`);
+        return false;
+      }
+    }
+    this.sessions.delete(sessionId);
+    // 通知 TUI：从会话列表移除（sync.data.session 的 session.deleted 分支）
+    this.pushLegacyEvent(
+      {
+        type: "session.deleted",
+        properties: { sessionID: sessionId, info: { id: sessionId } },
+      },
+      state.directory,
+    );
+    ocLog(`[oc-server] deleted session ${sessionId}`);
+    return true;
+  }
+
 
   getSessionIdByDsh(dshSessionId: string): string | undefined {
     return this.findByDsh(dshSessionId)?.id;

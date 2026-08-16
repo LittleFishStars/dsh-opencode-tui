@@ -44,6 +44,8 @@ export interface OcServerOptions {
             deletions: number;
         }>;
     }>>;
+    /** 删除 DSH 会话（释放活跃 agent + 删除持久化数据）。由 plugin 提供。 */
+    onDeleteSession?: (dshSessionId: string) => Promise<void>;
 }
 export declare class OcServer {
     private sessions;
@@ -124,5 +126,10 @@ export declare class OcServer {
     private legacyProvider;
     /** 记录 DSH session id 与 opencode session id 的绑定（agent 创建后由 plugin 调用）。 */
     bindDshSession(ocSessionId: string, dshSessionId: string): void;
+    /**
+     * 删除会话（DELETE /session/:id）：从内存移除 + 通知 TUI + 删除 DSH 持久化数据。
+     * 返回是否成功（false = 会话不存在或删除失败）。
+     */
+    deleteSession(sessionId: string): Promise<boolean>;
     getSessionIdByDsh(dshSessionId: string): string | undefined;
 }
