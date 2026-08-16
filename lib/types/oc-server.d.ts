@@ -31,8 +31,13 @@ export declare class OcServer {
     private http;
     private port;
     private modelCache;
+    /** 历史会话重建 promise：会话列表/详情请求等待它完成，避免 hydrate 前返回空列表。 */
+    private hydratePromise;
     constructor(ctx: Context, opts: OcServerOptions);
     start(): Promise<number>;
+    private runHydrate;
+    /** 等待历史会话重建完成（带超时兜底，避免 hydrate 挂起卡住请求）。 */
+    private waitHydrate;
     get url(): string;
     stop(): Promise<void>;
     private sendJson;

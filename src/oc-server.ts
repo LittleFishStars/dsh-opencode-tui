@@ -212,6 +212,8 @@ export class OcServer {
   private http: ReturnType<typeof createServer>;
   private port = 0;
   private modelCache: ModelRef | undefined;
+  /** 历史会话重建 promise：会话列表/详情请求等待它完成，避免 hydrate 前返回空列表。 */
+  private hydratePromise: Promise<void> | undefined;
 
   constructor(ctx: Context, opts: OcServerOptions) {
     this.ctx = ctx;
@@ -227,18 +229,34 @@ export class OcServer {
     // 预热模型缓存
     const selection = this.opts.getSelection();
     if (selection) this.modelCache = { id: selection.model, providerID: selection.provider };
-    // 从 DSH 持久层重建历史会话（异步，不阻塞 TUI 启动）
-    void this.opts.listDshSessions?.().then((list) => {
-      for (const item of list) {
-        try {
-          this.hydrateSession(item.sessionId, item.title, item.preset, item.views);
-        } catch (error) {
-          ocLog(`[oc-server] hydrate ${item.sessionId} failed: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
-      ocLog(`[oc-server] hydrated ${list.length} sessions`);
-    });
+    // 从 DSH 持久层重建历史会话（异步，不阻塞 TUI 启动；列表/详情请求会等待）
+    this.hydratePromise = this.runHydrate();
     return this.port;
+  }
+
+  private async runHydrate(): Promise<void> {
+    const list = (await this.opts.listDshSessions?.()) ?? [];
+    for (const item of list) {
+      try {
+        this.hydrateSession(item.sessionId, item.title, item.preset, item.views);
+      } catch (error) {
+        ocLog(`[oc-server] hydrate ${item.sessionId} failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    ocLog(`[oc-server] hydrated ${list.length} sessions`);
+  }
+
+  /** 等待历史会话重建完成（带超时兜底，避免 hydrate 挂起卡住请求）。 */
+  private async waitHydrate(): Promise<void> {
+    if (!this.hydratePromise) return;
+    try {
+      await Promise.race([
+        this.hydratePromise,
+        new Promise<void>((resolve) => setTimeout(resolve, 15_000).unref?.()),
+      ]);
+    } catch {
+      /* hydrate 失败不阻塞 */
+    }
   }
 
   get url(): string {
@@ -839,6 +857,7 @@ export class OcServer {
     if (sessionMatch) {
       const sessionId = sessionMatch[1]!;
       const sub = sessionMatch[2];
+      if (method === "GET") await this.waitHydrate();
       if (method === "GET" && !sub) {
         const state = this.sessions.get(sessionId);
         if (this.sessionOr404(state, res)) {
@@ -1109,7 +1128,13 @@ export class OcServer {
       return;
     }
     if (path === "/session" && method === "GET") {
-      const list = Array.from(this.sessions.values()).map((s) => this.legacySession(s));
+      // 等待历史会话重建完成（否则 hydrate 慢时会话列表为空）
+      await this.waitHydrate();
+      // TUI 默认按项目过滤（?scope=project）；这里按工作目录匹配
+      const scope = url.searchParams.get("scope");
+      const list = Array.from(this.sessions.values())
+        .filter((s) => scope !== "project" || s.directory === this.opts.directory)
+        .map((s) => this.legacySession(s));
       this.sendJson(res, 200, list);
       return;
     }
@@ -1164,6 +1189,7 @@ export class OcServer {
     if (legacySessionMatch) {
       const sessionId = legacySessionMatch[1]!;
       const sub = legacySessionMatch[2];
+      if (method === "GET") await this.waitHydrate();
       if (method === "GET" && !sub) {
         const state = this.sessions.get(sessionId);
         if (this.sessionOr404(state, res)) {

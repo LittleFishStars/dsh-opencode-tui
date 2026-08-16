@@ -11,7 +11,7 @@
  * 会话与消息存储复用 dsh 的 agent 会话；UI 完全由 opencode 原版提供。
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -93,13 +93,28 @@ function apply(ctx: Context, config: PluginConfig) {
   // 当前活跃 agent（最近一次 onPrompt 创建的会话）
   let activeManager: AgentManager | undefined;
 
-  // 历史会话重建：从 DSH 持久层加载会话投影
+  // 历史会话重建：从 DSH 持久层加载会话投影（只取当前工作目录的会话，跨目录会话
+  // 不进 TUI 会话列表，也避免 hydrate 全部目录导致启动/列表变慢）
+  // 历史会话重建：从 DSH 持久层加载会话投影（只取当前工作目录的会话，跨目录会话
+  // 不进 TUI 会话列表，也避免 hydrate 全部目录导致启动/列表变慢）
+  const dbgLog = (message: string): void => {
+    try {
+      appendFileSync(join(process.env.DSH_HOME ?? join(homedir(), ".dsh"), "logs", "oc-server.log"), `${new Date().toISOString()} [plugin] ${message}\n`);
+    } catch {
+      /* 忽略 */
+    }
+  };
   const listDshSessions = async (): Promise<Array<{ sessionId: string; title: string; preset?: string; views: MessageView[] }>> => {
     const out: Array<{ sessionId: string; title: string; preset?: string; views: MessageView[] }> = [];
+    let skipped = 0;
     try {
       const records = await ctx.sessionQuery.listSessions();
       for (const record of records) {
         const header = record.header;
+        if (header.cwd && cwd && header.cwd !== cwd) {
+          skipped++;
+          continue;
+        }
         try {
           const inspection = await ctx.sessionPersistence.inspect(header.id);
           const folded = foldSessionMeta(header.id, header.createdAt, inspection.events);
@@ -109,12 +124,13 @@ function apply(ctx: Context, config: PluginConfig) {
             preset: folded.preset,
             views: projectEvents(inspection.events),
           });
-        } catch {
-          /* 读不到的会话跳过 */
+        } catch (error) {
+          dbgLog(`inspect ${header.id} failed: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
-    } catch {
-      /* 列表加载失败不致命 */
+      dbgLog(`listSessions -> ${records.length} records (${skipped} skipped for cwd, ${out.length} hydrated)`);
+    } catch (error) {
+      dbgLog(`listSessions failed: ${error instanceof Error ? error.message : String(error)}`);
     }
     return out;
   };
