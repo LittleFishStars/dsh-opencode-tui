@@ -831,6 +831,7 @@ export class OcServer {
           if (lastText === text) break;
         }
         const messageId = ocId("msg");
+        const partId = ocId("text");
         const sel = this.sessionModel(state);
         const info: LegacyMessageInfo = {
           id: messageId,
@@ -844,7 +845,7 @@ export class OcServer {
           info,
           parts: [
             {
-              id: ocId("text"),
+              id: partId,
               sessionID: state.id,
               messageID: messageId,
               type: "text",
@@ -856,6 +857,19 @@ export class OcServer {
         this.pushSessionEvent(state, {
           type: "message.updated",
           properties: { info },
+        });
+        this.pushSessionEvent(state, {
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id: partId,
+              sessionID: state.id,
+              messageID: messageId,
+              type: "text",
+              text,
+              time: { start: now, end: now },
+            },
+          },
         });
         break;
       }
@@ -1277,11 +1291,27 @@ export class OcServer {
           agent: state.currentAgent,
           model: { providerID: sel?.providerID ?? "provider", modelID: sel?.id ?? "model" },
         };
+        const partId = ocId("text");
         state.messages.push({
           info,
-          parts: [{ id: ocId("text"), sessionID: state.id, messageID: messageId, type: "text", text, time: { start: now, end: now } }],
+          parts: [{ id: partId, sessionID: state.id, messageID: messageId, type: "text", text, time: { start: now, end: now } }],
         });
         this.pushSessionEvent(state, { type: "message.updated", properties: { info } });
+        // 推 part 事件：user 消息文本实时进 TUI 的 parts（否则消息列表里不显示，
+        // 只有重启 hydrate 后才有——TUI 的 sync 不会为后续消息重跑）
+        this.pushSessionEvent(state, {
+          type: "message.part.updated",
+          properties: {
+            part: {
+              id: partId,
+              sessionID: state.id,
+              messageID: messageId,
+              type: "text",
+              text,
+              time: { start: now, end: now },
+            },
+          },
+        });
         // 触发 DSH agent（当前 agent 映射的 preset 应用到 DSH 会话）
         this.runPrompt(state, text, { preset: PERMISSION_AGENTS[state.currentAgent] });
         // 响应占位 assistant 消息（TUI 期待 {info, parts}）
