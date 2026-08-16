@@ -17,7 +17,7 @@ QUERIES = [
     (r"\x1b\[c", "\x1b[?62;1;2;6;9;15;22c"),      # DA1 设备属性
     (r"\x1b_Gi=(\d+),[^\x07\x1b]*\x1b\\", "\x1b_Gi=\\1;OK\x1b\\"),  # kitty graphics 查询
     (r"\x1b\]1337;Capabilities\x1b\\", "\x1b]1337;Capabilities=report-cell-size\x1b\\"),  # iTerm2 能力查询
-    (r"\x1b\[14t", "\x1b[4;36;120t"),                  # 窗口尺寸
+    (r"\x1b\[14t", "SIZE"),                                  # 窗口尺寸（SIZE 占位，动态替换）
     (r"\x1b\[\?1016\$p", "\x1b[?1016;0$y"),            # DECRQM
     (r"\x1b\[\?2027\$p", "\x1b[?2027;0$y"),
     (r"\x1b\[\?2031\$p", "\x1b[?2031;0$y"),
@@ -25,6 +25,8 @@ QUERIES = [
     (r"\x1b\[\?2004\$p", "\x1b[?2004;0$y"),
     (r"\x1b\[\?2026\$p", "\x1b[?2026;0$y"),
 ]
+
+_QUERY_14T = re.compile(r"\x1b\[14t")
 
 _COMPILED = [(re.compile(p), r.encode()) for p, r in QUERIES]
 
@@ -66,6 +68,14 @@ class TermResponder:
             m, reply = hit
             self.buf = self.buf[m.end():]
             out = reply
+            if out == b"SIZE":
+                # 窗口尺寸查询：用 pty 的真实 winsize 应答（\x1b[4;<rows>;<cols>t）
+                try:
+                    import fcntl, termios, struct
+                    rows, cols, _, _ = struct.unpack("HHHH", fcntl.ioctl(self.master, termios.TIOCGWINSZ, b"\0" * 8))
+                    out = f"\x1b[4;{rows};{cols}t".encode()
+                except Exception:
+                    out = b"\x1b[4;36;120t"
             for i in range(1, m.re.groups + 1):
                 out = out.replace(("\\" + str(i)).encode(), m.group(i).encode())
             try:
@@ -93,6 +103,14 @@ class TermResponder:
             m, reply = hit
             self.buf = self.buf[m.end():]
             r = reply
+            if r == b"SIZE":
+                # 窗口尺寸查询：用 pty 的真实 winsize 应答
+                try:
+                    import fcntl, termios, struct
+                    rows, cols, _, _ = struct.unpack("HHHH", fcntl.ioctl(self.master, termios.TIOCGWINSZ, b"\0" * 8))
+                    r = f"\x1b[4;{rows};{cols}t".encode()
+                except Exception:
+                    r = b"\x1b[4;36;120t"
             for i in range(1, m.re.groups + 1):
                 r = r.replace(("\\" + str(i)).encode(), m.group(i).encode())
             out += r
