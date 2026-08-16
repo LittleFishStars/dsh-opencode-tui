@@ -53,21 +53,14 @@
     "@deepseek-ai/dsh-user-approval": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-user-questions": "^0.1.0-rc.6",
     "@deepseek-ai/schemastery": "^3.18.1",
-    "highlight.js": "^11.11.1",
-    "ink": "^7.1.1",
-    "marked": "^15.0.0",
-    "react": "^19.0.0",
-    "string-width": "^7.2.0",
-    "wrap-ansi": "^9.0.0"
+    "string-width": "^7.2.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
-    "@types/react": "^19.0.0",
     "typescript": "^5.7.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "tui": "node bin/dsh-opencode-tui.js",
-    "smoke": "node --input-type=module -e \"import('./lib/plugin.js').then(()=>console.log('plugin loads ok')).catch(e=>{console.error(e);process.exit(1)})\""
+    "smoke": "node --input-type=module -e \"import('./lib/plugin.js').then(()=>import('./lib/bridge.js')).then(()=>console.log('plugins load ok')).catch(e=>{console.error(e);process.exit(1)})\""
   }
 }

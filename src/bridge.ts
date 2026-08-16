@@ -16,6 +16,9 @@ import type { Context } from "@deepseek-ai/cordis";
 import type { Session, SessionEvent } from "@deepseek-ai/dsh-session";
 import type { ApprovalOutcome, ApprovalRequest } from "@deepseek-ai/dsh-user-approval";
 import type { AskUserQuestionAnswer, AskUserQuestionRequest } from "@deepseek-ai/dsh-user-questions";
+import "@deepseek-ai/dsh-agent-default-model";
+import "@deepseek-ai/dsh-session-query";
+import "@deepseek-ai/dsh-session-persistence";
 import { AgentManager } from "./agent.js";
 import { applyEvent, projectEvents, foldSessionMeta, type MessageView } from "./projection.js";
 import { ApprovalQueue, QuestionQueue } from "./store.js";
@@ -243,7 +246,7 @@ function apply(ctx: Context, config: PluginConfig) {
       emit("agent/done", { sessionId: session.id, reason, time: event.time });
     }
     if (!changed) {
-      if (event.type === "session/title") {
+      if ((event.type as string) === "session/title") {
         const title = ((event as { data?: { title?: string } }).data as { title?: string } | undefined)?.title;
         if (title) {
           s.title = title;

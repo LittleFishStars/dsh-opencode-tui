@@ -159,10 +159,8 @@
     - id: dsh-opencode-tui
       name: dsh-opencode-tui
       config:
-        provider: deepseek-official
-        # Alt-screen fullscreen（opencode 同款）：退出时恢复终端。
-        fullscreen: true
-        # 每个请求实际生效的推理强度，按当前路由的 adapter 档位校验
-        # （deepseek: off/high/max）——不在档位表里的值被忽略，回落 adapter
-        # 默认值。优先于模型选择里的 reasoning。
-        effort: max
+        # opencode fork 二进制路径（默认：包内 ../opencode-fork/opencode 或
+        # $DSH_HOME/opencode-fork/opencode，缺失时自动 go build）。
+        # binary: /absolute/path/to/opencode
+        # 桥子进程使用的 profile 名（默认 dsh-opencode-tui）。
+        # bridgeProfile: dsh-opencode-tui

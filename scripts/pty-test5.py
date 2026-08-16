@@ -9,20 +9,20 @@ import os, pty, select, time, subprocess, fcntl, termios, struct, sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from miniterm import MiniTerm
 
-CWD = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "opencode-fork")
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CWD = ROOT
 ENV = dict(os.environ)
-ENV["DSH_HOME"] = os.path.join(os.path.dirname(CWD), ".dsh-home")
-ENV["DSH_BRIDGE"] = "1"
+ENV["DSH_HOME"] = os.path.join(ROOT, ".dsh-home")
 ENV["NODE_ENV"] = "production"
 ENV["COLORTERM"] = "truecolor"
 ENV["TERM"] = "xterm-256color"
-ENV["XDG_CONFIG_HOME"] = os.path.join(os.path.dirname(CWD), ".xdg-config")
-ENV["XDG_DATA_HOME"] = os.path.join(os.path.dirname(CWD), ".xdg-data")
+ENV["XDG_CONFIG_HOME"] = os.path.join(ROOT, ".xdg-config")
+ENV["XDG_DATA_HOME"] = os.path.join(ROOT, ".xdg-data")
 
 COLS, ROWS = 110, 32
 master, slave = pty.openpty()
 fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", ROWS, COLS, 0, 0))
-proc = subprocess.Popen(["./opencode"], cwd=CWD, env=ENV,
+proc = subprocess.Popen(["dsh", "--profile", "dsh-opencode-tui"], cwd=CWD, env=ENV,
     stdin=slave, stdout=slave, stderr=slave, close_fds=True)
 os.close(slave)
 term = MiniTerm(COLS, ROWS)
