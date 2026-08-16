@@ -5,10 +5,43 @@ import os, pty, select, sys, time, subprocess, re, fcntl, termios, struct, glob
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from miniterm import MiniTerm
 
-CWD = "/home/ylxc/Projects/DSH/dsh-opencode-tui"
+CWD = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ENV = dict(os.environ)
 ENV["DSH_HOME"] = os.path.join(CWD, ".dsh-home")
 ENV["NODE_ENV"] = "production"
+
+def ensure_test_env():
+    """自举测试环境：profile + 依赖 + 凭据（凭据缺失时跳过真实模型调用）。"""
+    import shutil
+    profile = os.path.join(ENV["DSH_HOME"], "profiles", "opencode")
+    if os.path.exists(os.path.join(profile, "node_modules", "dsh-opencode-tui")):
+        return
+    os.makedirs(profile, exist_ok=True)
+    manifest = (
+        '{\n'
+        '  "name": "dsh-profile-opencode",\n'
+        '  "private": true,\n'
+        '  "dependencies": { "dsh-opencode-tui": "link:%s" },\n'
+        '  "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "dsh-opencode-tui"] } }\n'
+        '}\n'
+    ) % CWD
+    with open(os.path.join(profile, "package.json"), "w") as f:
+        f.write(manifest)
+    with open(os.path.join(profile, "cordis.patch.yml"), "w") as f:
+        f.write("[]\n")
+    with open(os.path.join(profile, ".npmrc"), "w") as f:
+        f.write("store-dir=%s\n" % os.path.join(ENV["DSH_HOME"], "pnpm-store"))
+    home = os.path.expanduser("~/.dsh")
+    for name in (".credentials.yaml", "settings.yaml"):
+        src = os.path.join(home, name)
+        if os.path.exists(src):
+            shutil.copy(src, ENV["DSH_HOME"])
+    subprocess.run(
+        ["pnpm", "install", "--store-dir", os.path.join(ENV["DSH_HOME"], "pnpm-store")],
+        cwd=profile, check=False,
+    )
+
+ensure_test_env()
 
 sessions = glob.glob(os.path.join(CWD, ".dsh-home", "sessions", "*", "*", "session.jsonl.zstd"))
 resume_id = None
