@@ -19,6 +19,7 @@ import Schema from "@deepseek-ai/schemastery";
 import type { Context } from "@deepseek-ai/cordis";
 import type { Session, SessionEvent } from "@deepseek-ai/dsh-session";
 import type { ApprovalOutcome, ApprovalRequest } from "@deepseek-ai/dsh-user-approval";
+import type { AskUserQuestionAnswer, AskUserQuestionRequest } from "@deepseek-ai/dsh-user-questions";
 import "@deepseek-ai/dsh-agent-default-model";
 import "@deepseek-ai/dsh-session-query";
 import "@deepseek-ai/dsh-session-persistence";
@@ -161,6 +162,33 @@ function apply(ctx: Context, config: PluginConfig) {
       return next();
     },
   );
+
+  // 用户提问：DSH askUserQuestion → TUI question 对话框
+  const userQuestions = ctx.get("userQuestions") as
+    | { registerProvider(p: { ask(req: AskUserQuestionRequest): Promise<AskUserQuestionAnswer> }): () => void }
+    | undefined;
+  if (userQuestions) {
+    userQuestions.registerProvider({
+      ask: (request) => {
+        const owned = activeManager?.current;
+        const sessionId = owned?.sessionId;
+        if (!sessionId) return Promise.resolve({ answers: [] });
+        const outcome = ocServer.handleQuestion(
+          sessionId,
+          request.questions.map((q) => ({
+            id: q.id,
+            question: q.question,
+            detail: q.detail,
+            header: q.header,
+            options: q.options,
+            multiSelect: q.multiSelect,
+          })),
+        );
+        if (outcome) return outcome as Promise<AskUserQuestionAnswer>;
+        return Promise.resolve({ answers: [] });
+      },
+    });
+  }
 
   // ── 启动 server + TUI ────────────────────────────────────────────────────
   let child: ChildProcess | undefined;
