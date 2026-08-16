@@ -1,26 +1,37 @@
 import Schema from "@deepseek-ai/schemastery";
 import type { Context } from "@deepseek-ai/cordis";
+import "@deepseek-ai/dsh-agent-default-model";
 declare const name = "dsh-opencode-tui";
 declare const inject: string[];
 declare const Config: Schema<Schemastery.ObjectS<{
-    /** opencode fork 二进制路径（默认自动定位） */
+    /** lildax 二进制路径（默认自动定位） */
     binary: Schema<string, string>;
-    /** 桥子进程使用的 profile 名（默认 dsh-opencode-tui） */
-    bridgeProfile: Schema<string, string>;
-    /** 透传给 opencode 的附加参数 */
+    /** agent preset id（默认取 roster 默认） */
+    preset: Schema<string, string>;
+    /** 工作目录（默认进程 cwd） */
+    cwd: Schema<string, string>;
+    /** 透传给 TUI 的附加参数 */
     args: Schema<string[], string[]>;
+    /** 兼容层监听端口（默认 0 = 随机） */
+    serverPort: Schema<number, number>;
 }>, Schemastery.ObjectT<{
-    /** opencode fork 二进制路径（默认自动定位） */
+    /** lildax 二进制路径（默认自动定位） */
     binary: Schema<string, string>;
-    /** 桥子进程使用的 profile 名（默认 dsh-opencode-tui） */
-    bridgeProfile: Schema<string, string>;
-    /** 透传给 opencode 的附加参数 */
+    /** agent preset id（默认取 roster 默认） */
+    preset: Schema<string, string>;
+    /** 工作目录（默认进程 cwd） */
+    cwd: Schema<string, string>;
+    /** 透传给 TUI 的附加参数 */
     args: Schema<string[], string[]>;
+    /** 兼容层监听端口（默认 0 = 随机） */
+    serverPort: Schema<number, number>;
 }>>;
 interface PluginConfig {
     binary?: string;
-    bridgeProfile?: string;
+    preset?: string;
+    cwd?: string;
     args?: string[];
+    serverPort?: number;
 }
-declare function apply(ctx: Context, config: PluginConfig): (() => void) | undefined;
+declare function apply(ctx: Context, config: PluginConfig): (() => Promise<void>) | undefined;
 export { Config, apply, inject, name };

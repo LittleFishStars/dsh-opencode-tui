@@ -1,0 +1,1076 @@
+/**
+ * opencode server 协议兼容层（DSH 侧）。
+ *
+ * 实现 opencode TUI（fork dev 构建的 lildax）需要的 HTTP 端点：
+ * 旧路径（/session、/session/:id/message、/global/event …）+ v2（/api/*），
+ * 数据源为 DSH 的 agent/会话（通过 AgentManager + 事件订阅）。
+ *
+ * TUI 启动方式：`OPENCODE_URL=http://127.0.0.1:<port> lildax`
+ * （fork 的 default.ts 已 patch 支持该环境变量）。
+ */
+import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createHash } from "node:crypto";
+import type { Context } from "@deepseek-ai/cordis";
+import type { SessionEvent } from "@deepseek-ai/dsh-session";
+import type { ModelSelection } from "@deepseek-ai/dsh-agent";
+import {
+  located,
+  makeSessionInfo,
+  ocId,
+  makeAgentInfo,
+  legacyModelFromV2,
+  type AgentInfo,
+  type LegacyModel,
+  type ModelRef,
+  type SessionInfo,
+} from "./oc-proto.js";
+
+// ── 旧协议类型 ─────────────────────────────────────────────────────────────
+
+interface LegacyTextPart {
+  id: string;
+  sessionID: string;
+  messageID: string;
+  type: "text";
+  text: string;
+  synthetic?: boolean;
+  time?: { start: number; end?: number };
+}
+
+interface LegacyReasoningPart {
+  id: string;
+  sessionID: string;
+  messageID: string;
+  type: "reasoning";
+  text: string;
+  time?: { start: number; end?: number };
+}
+
+interface LegacyToolState {
+  status: "pending" | "running" | "completed" | "error";
+  input?: Record<string, unknown>;
+  content?: unknown[];
+  result?: unknown;
+  error?: string;
+}
+
+interface LegacyToolPart {
+  id: string;
+  sessionID: string;
+  messageID: string;
+  type: "tool";
+  tool: string;
+  state: LegacyToolState;
+  callID?: string;
+  time: { start: number; end?: number };
+}
+
+type LegacyPart = LegacyTextPart | LegacyReasoningPart | LegacyToolPart;
+
+interface LegacyMessageInfo {
+  id: string;
+  sessionID: string;
+  role: "user" | "assistant";
+  time: { created: number; updated?: number; completed?: number };
+  agent: string;
+  model: { providerID: string; modelID: string };
+  parentID?: string;
+  modelID?: string;
+  providerID?: string;
+  mode?: string;
+  path?: { cwd: string; root: string };
+  cost?: number;
+  tokens?: { input: number; output: number; reasoning: number; cache: { read: number; write: number } };
+  finish?: string;
+  error?: string;
+}
+
+interface LegacyMessage {
+  info: LegacyMessageInfo;
+  parts: LegacyPart[];
+}
+
+// ── 会话状态 ───────────────────────────────────────────────────────────────
+
+interface SessionState {
+  id: string; // opencode 会话 id（ses_…）
+  directory: string;
+  /** DSH 会话 id（agent 绑定的 session id；创建后才有） */
+  dshSessionId?: string;
+  title: string;
+  createdAt: number;
+  updatedAt: number;
+  busy: boolean;
+  messages: LegacyMessage[];
+  /** 当前正在生成的 assistant 消息（增量构建） */
+  pending?: PendingAssistant;
+  sse: Set<ServerResponse>;
+}
+
+interface PendingAssistant {
+  messageId: string;
+  agent: string;
+  model: ModelRef;
+  startedAt: number;
+  text: string;
+  textPartId: string;
+  reasoning: string;
+  reasoningPartId: string;
+  tools: Map<string, PendingTool>;
+  finish?: string;
+  endedAt?: number;
+}
+
+interface PendingTool {
+  callID: string;
+  name: string;
+  state: LegacyToolState;
+  inputArgs: string;
+  createdAt: number;
+}
+
+// ── 配置 ───────────────────────────────────────────────────────────────────
+
+export interface OcServerOptions {
+  directory: string;
+  /** 监听端口（默认 0 = 随机） */
+  port?: number;
+  /** 由 plugin 提供：创建/恢复 agent 并发送消息；返回 DSH session id 供绑定。
+   *  hooks.onSession 必须在 send 之前同步调用（避免 turn/start 事件早于绑定而丢失）。 */
+  onPrompt: (
+    text: string,
+    opts: { resumeSessionId?: string },
+    hooks: { onSession: (dshSessionId: string) => void },
+  ) => Promise<string | undefined>;
+  /** 获取当前模型选择（provider/model） */
+  getSelection: () => ModelSelection | undefined;
+  /** 查询 DSH 会话投影（启动时重建历史） */
+  listDshSessions?: () => Promise<Array<{ sessionId: string; title: string }>>;
+}
+
+// ── server ─────────────────────────────────────────────────────────────────
+
+export class OcServer {
+  private sessions = new Map<string, SessionState>();
+  private globalSse = new Set<ServerResponse>();
+  private opts: OcServerOptions;
+  private ctx: Context;
+  private http: ReturnType<typeof createServer>;
+  private port = 0;
+  private modelCache: ModelRef | undefined;
+
+  constructor(ctx: Context, opts: OcServerOptions) {
+    this.ctx = ctx;
+    this.opts = opts;
+    this.http = createServer((req, res) => void this.handle(req, res).catch(() => this.sendJson(res, 500, { _tag: "UnknownError", message: "internal error" })));
+  }
+
+  async start(): Promise<number> {
+    await new Promise<void>((resolve) => this.http.listen(this.opts.port ?? 0, "127.0.0.1", resolve));
+    const addr = this.http.address();
+    this.port = typeof addr === "object" && addr ? addr.port : 0;
+    process.stderr.write(`[oc-server] listening on ${this.url}\n`);
+    // 预热模型缓存
+    const selection = this.opts.getSelection();
+    if (selection) this.modelCache = { id: selection.model, providerID: selection.provider };
+    return this.port;
+  }
+
+  get url(): string {
+    return `http://127.0.0.1:${this.port}`;
+  }
+
+  async stop(): Promise<void> {
+    await new Promise<void>((resolve) => this.http.close(() => resolve()));
+  }
+
+  // ── 工具 ─────────────────────────────────────────────────────────────────
+
+  private sendJson(res: ServerResponse, status: number, body: unknown): void {
+    const payload = JSON.stringify(body);
+    res.writeHead(status, {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(payload),
+    });
+    res.end(payload);
+  }
+
+  private sseHeaders(res: ServerResponse): void {
+    res.writeHead(200, {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+  }
+
+  /** 推旧协议事件（{type, properties}）到全局事件流。 */
+  private pushLegacyEvent(properties: Record<string, unknown> & { type: string }): void {
+    if (process.env.DSH_OC_NO_EVENTS === "1") return;
+    const payload = JSON.stringify(properties);
+    for (const res of this.globalSse) {
+      try {
+        res.write(`event: ${properties.type}\ndata: ${payload}\n\n`);
+      } catch {
+        /* 断连由 close 清理 */
+      }
+    }
+  }
+
+  private pushSessionEvent(state: SessionState, properties: Record<string, unknown> & { type: string }): void {
+    this.pushLegacyEvent(properties);
+  }
+
+  private sessionOr404(state: SessionState | undefined, res: ServerResponse): state is SessionState {
+    if (state) return true;
+    this.sendJson(res, 404, { _tag: "SessionNotFoundError", message: "Session not found" });
+    return false;
+  }
+
+  private getOrCreateSession(id: string, directory: string): SessionState {
+    let state = this.sessions.get(id);
+    if (!state) {
+      state = {
+        id,
+        directory,
+        title: "New Session",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        busy: false,
+        messages: [],
+        sse: new Set(),
+      };
+      this.sessions.set(id, state);
+    }
+    return state;
+  }
+
+  private selection(): ModelRef | undefined {
+    const sel = this.opts.getSelection();
+    if (sel) return { id: sel.model, providerID: sel.provider };
+    return this.modelCache;
+  }
+
+  // ── 事件映射：DSH 事件 → 旧协议事件 ─────────────────────────────────────
+
+  /** 由 plugin 在 ctx.on('session/event') 中调用。 */
+  handleDshEvent(session: { id: string; title?: string }, event: SessionEvent): void {
+    const state = this.findByDsh(session.id);
+    if (!state) return;
+    switch (event.type) {
+      case "turn/start": {
+        state.busy = true;
+        state.updatedAt = Date.now();
+        const sel = this.selection() ?? { id: "model", providerID: "provider" };
+        const pending: PendingAssistant = {
+          messageId: ocId("msg"),
+          agent: "build",
+          model: sel,
+          startedAt: Date.now(),
+          text: "",
+          textPartId: ocId("text"),
+          reasoning: "",
+          reasoningPartId: ocId("reasoning"),
+          tools: new Map(),
+        };
+        state.pending = pending;
+        this.pushSessionEvent(state, {
+          type: "session.status",
+          sessionID: state.id,
+          status: { type: "busy" },
+        });
+        const info: LegacyMessageInfo = {
+          id: pending.messageId,
+          sessionID: state.id,
+          role: "assistant",
+          time: { created: pending.startedAt, updated: pending.startedAt },
+          agent: "build",
+          model: { providerID: sel.providerID, modelID: sel.id },
+          modelID: sel.id,
+          providerID: sel.providerID,
+          mode: "primary",
+          path: { cwd: state.directory, root: state.directory },
+          cost: 0,
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        };
+        state.messages.push({ info, parts: [] });
+        this.pushSessionEvent(state, {
+          type: "message.updated",
+          info,
+        });
+        break;
+      }
+      case "assistant/chunk": {
+        const pending = state.pending;
+        if (!pending) break;
+        const data = event.data as { chunk?: { type?: string; text?: string; id?: string; name?: string; arguments?: string } };
+        const chunk = data.chunk;
+        if (!chunk) break;
+        if (chunk.type === "text-delta" && chunk.text) {
+          pending.text += chunk.text;
+          const msg = this.findMessage(state, pending.messageId);
+          if (msg) {
+            msg.info.time.updated = Date.now();
+          }
+          this.pushSessionEvent(state, {
+            type: "message.part.updated",
+            part: {
+              id: pending.textPartId,
+              sessionID: state.id,
+              messageID: pending.messageId,
+              type: "text",
+              text: pending.text,
+              time: { start: pending.startedAt },
+            },
+            delta: chunk.text,
+          });
+        } else if (chunk.type === "reasoning-delta" && chunk.text) {
+          pending.reasoning += chunk.text;
+          this.pushSessionEvent(state, {
+            type: "message.part.updated",
+            part: {
+              id: pending.reasoningPartId,
+              sessionID: state.id,
+              messageID: pending.messageId,
+              type: "reasoning",
+              text: pending.reasoning,
+              time: { start: pending.startedAt },
+            },
+            delta: chunk.text,
+          });
+        } else if (chunk.type === "tool-call-delta") {
+          const callID = chunk.id ?? "call_unknown";
+          let tool = pending.tools.get(callID);
+          if (!tool) {
+            tool = {
+              callID,
+              name: chunk.name ?? "tool",
+              state: { status: "running" },
+              inputArgs: "",
+              createdAt: Date.now(),
+            };
+            pending.tools.set(callID, tool);
+            this.pushSessionEvent(state, {
+              type: "message.part.updated",
+              part: this.toolPart(state, pending, tool),
+            });
+          }
+          tool.inputArgs += chunk.arguments ?? "";
+        }
+        break;
+      }
+      case "tool/call": {
+        const pending = state.pending;
+        if (!pending) break;
+        const data = event.data as { callId?: string; name?: string; arguments?: string };
+        const callID = data.callId ?? ocId("call");
+        const name = data.name ?? "tool";
+        let tool = pending.tools.get(callID);
+        if (!tool) {
+          tool = {
+            callID,
+            name,
+            state: { status: "running" },
+            inputArgs: "",
+            createdAt: Date.now(),
+          };
+          pending.tools.set(callID, tool);
+        }
+        tool.name = name;
+        let input: Record<string, unknown> = {};
+        try {
+          input = data.arguments ? JSON.parse(data.arguments) : {};
+        } catch {
+          input = { raw: data.arguments };
+        }
+        tool.state.input = input;
+        this.pushSessionEvent(state, {
+          type: "message.part.updated",
+          part: this.toolPart(state, pending, tool),
+        });
+        break;
+      }
+      case "tool/result": {
+        const pending = state.pending;
+        if (!pending) break;
+        const data = event.data as {
+          message?: { content?: Array<{ type?: string; text?: string }> };
+          error?: { name?: string; code?: string };
+        };
+        const message = data.message;
+        const callID = (message?.content?.[0] as { callId?: string } | undefined)?.callId ?? "call_unknown";
+        const resultText = message ? toolResultText(message) : "";
+        const tool = pending.tools.get(callID);
+        if (tool) {
+          tool.state = data.error || resultText.startsWith("Error:")
+            ? { ...tool.state, status: "error", error: resultText || data.error?.name || "tool error" }
+            : { ...tool.state, status: "completed", content: [{ type: "text", text: resultText }], result: resultText };
+          this.pushSessionEvent(state, {
+            type: "message.part.updated",
+            part: this.toolPart(state, pending, tool),
+          });
+        }
+        break;
+      }
+      case "turn/end": {
+        const pending = state.pending;
+        if (pending) {
+          const data = event.data as { reason?: { kind?: string } };
+          const kind = data.reason?.kind;
+          const finish = kind === "completed" ? "end_turn" : kind === "aborted" || kind === "interrupted" ? "canceled" : kind === "error" ? "error" : "end_turn";
+          pending.finish = finish;
+          pending.endedAt = Date.now();
+          const msg = this.findMessage(state, pending.messageId);
+          if (msg) {
+            msg.info.time.updated = pending.endedAt;
+            msg.info.time.completed = pending.endedAt;
+            msg.info.finish = finish;
+            if (!msg.info.parentID) {
+              const userMsg = [...state.messages].reverse().find((m) => m.info.role === "user");
+              msg.info.parentID = userMsg?.info.id;
+            }
+            msg.parts = [];
+            if (pending.text) {
+              msg.parts.push({
+                id: pending.textPartId,
+                sessionID: state.id,
+                messageID: pending.messageId,
+                type: "text",
+                text: pending.text,
+                time: { start: pending.startedAt, end: pending.endedAt },
+              });
+            }
+            if (pending.reasoning) {
+              msg.parts.push({
+                id: pending.reasoningPartId,
+                sessionID: state.id,
+                messageID: pending.messageId,
+                type: "reasoning",
+                text: pending.reasoning,
+                time: { start: pending.startedAt, end: pending.endedAt },
+              });
+            }
+            for (const tool of pending.tools.values()) {
+              msg.parts.push(this.toolPart(state, pending, tool));
+            }
+            this.pushSessionEvent(state, {
+              type: "message.updated",
+              info: msg.info,
+            });
+          }
+          state.pending = undefined;
+        }
+        state.busy = false;
+        state.updatedAt = Date.now();
+        this.pushSessionEvent(state, {
+          type: "session.status",
+          sessionID: state.id,
+          status: { type: "idle" },
+        });
+        break;
+      }
+      case "user/message": {
+        const data = event.data as { content?: Array<{ type?: string; text?: string }>; source?: unknown };
+        const text = userTextFromMessage(data);
+        if (!text.trim()) break;
+        const messageId = ocId("msg");
+        const now = Date.now();
+        const sel = this.selection();
+        const info: LegacyMessageInfo = {
+          id: messageId,
+          sessionID: state.id,
+          role: "user",
+          time: { created: now, updated: now },
+          agent: "build",
+          model: { providerID: sel?.providerID ?? "provider", modelID: sel?.id ?? "model" },
+        };
+        state.messages.push({
+          info,
+          parts: [
+            {
+              id: ocId("text"),
+              sessionID: state.id,
+              messageID: messageId,
+              type: "text",
+              text,
+              time: { start: now, end: now },
+            },
+          ],
+        });
+        this.pushSessionEvent(state, {
+          type: "message.updated",
+          info,
+        });
+        break;
+      }
+      case "session/title": {
+        const data = event.data as { title?: string };
+        if (data.title) {
+          state.title = data.title;
+          this.pushSessionEvent(state, {
+            type: "session.updated",
+            info: this.legacySessionInfo(state),
+          });
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }
+
+  private toolPart(state: SessionState, pending: PendingAssistant, tool: PendingTool): LegacyToolPart {
+    return {
+      id: tool.callID,
+      sessionID: state.id,
+      messageID: pending.messageId,
+      type: "tool",
+      tool: tool.name,
+      state: tool.state,
+      callID: tool.callID,
+      time: { start: tool.createdAt, end: Date.now() },
+    };
+  }
+
+  private findMessage(state: SessionState, messageId: string): LegacyMessage | undefined {
+    return state.messages.find((m) => m.info.id === messageId);
+  }
+
+  private findByDsh(dshSessionId: string): SessionState | undefined {
+    for (const state of this.sessions.values()) {
+      if (state.dshSessionId === dshSessionId) return state;
+    }
+    return undefined;
+  }
+
+  // ── HTTP 路由 ────────────────────────────────────────────────────────────
+
+  private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+    const path = url.pathname;
+    const method = req.method ?? "GET";
+    process.stderr.write(`[oc-server] ${method} ${path}\n`);
+
+    // 读取 body
+    const body = await readBody(req);
+
+    // ── v2 端点 ──
+    if (path === "/api/health" && method === "GET") {
+      this.sendJson(res, 200, { healthy: true });
+      return;
+    }
+    if (path === "/api/location" && method === "GET") {
+      this.sendJson(res, 200, located({ directory: this.opts.directory, project: { id: projectIdOf(this.opts.directory), directory: this.opts.directory } }, this.opts.directory));
+      return;
+    }
+    if (path === "/api/agent" && method === "GET") {
+      const agents: AgentInfo[] = [makeAgentInfo("build", "Code generation and editing agent")];
+      this.sendJson(res, 200, located(agents, this.opts.directory));
+      return;
+    }
+    if (path === "/api/provider" && method === "GET") {
+      const provider = this.legacyProvider();
+      this.sendJson(res, 200, located(provider ? [provider] : [], this.opts.directory));
+      return;
+    }
+    if (path === "/api/model" && method === "GET") {
+      const provider = this.legacyProvider();
+      const models = provider ? Object.values(provider.models).map((m) => ({ id: m.id, providerID: m.providerID, family: m.family, name: m.name })) : [];
+      this.sendJson(res, 200, located(models, this.opts.directory));
+      return;
+    }
+    if (path === "/api/integration" && method === "GET") {
+      this.sendJson(res, 200, located([], this.opts.directory));
+      return;
+    }
+    if (path === "/api/reference" && method === "GET") {
+      this.sendJson(res, 200, located([], this.opts.directory));
+      return;
+    }
+    if (path === "/api/command" && method === "GET") {
+      this.sendJson(res, 200, located([], this.opts.directory));
+      return;
+    }
+    if (path === "/api/skill" && method === "GET") {
+      this.sendJson(res, 200, located([], this.opts.directory));
+      return;
+    }
+    if (path === "/api/event" && method === "GET") {
+      this.sseHeaders(res);
+      this.globalSse.add(res);
+      res.write(": connected\n\n");
+      req.on("close", () => this.globalSse.delete(res));
+      return;
+    }
+    const sessionMatch = path.match(/^\/api\/session\/([^/]+)(?:\/([^/]+))?$/);
+    if (sessionMatch) {
+      const sessionId = sessionMatch[1]!;
+      const sub = sessionMatch[2];
+      if (method === "GET" && !sub) {
+        const state = this.sessions.get(sessionId);
+        if (this.sessionOr404(state, res)) {
+          this.sendJson(res, 200, located(this.infoOf(state), this.opts.directory));
+        }
+        return;
+      }
+      if (method === "POST" && !sub) {
+        const payload = body ? safeParse(body) : {};
+        const id = (payload.id as string) ?? ocId("ses");
+        const state = this.getOrCreateSession(id, this.opts.directory);
+        this.sendJson(res, 200, located(this.infoOf(state), this.opts.directory));
+        return;
+      }
+      if (method === "POST" && sub === "prompt") {
+        const state = this.sessions.get(sessionId) ?? this.getOrCreateSession(sessionId, this.opts.directory);
+        const payload = body ? safeParse(body) : {};
+        const prompt = payload.prompt as string | { text?: string } | undefined;
+        const text = typeof prompt === "string" ? prompt : (prompt?.text ?? "");
+        if (!text) {
+          this.sendJson(res, 400, { _tag: "InvalidRequestError", message: "empty prompt" });
+          return;
+        }
+        const admitted = { messageID: ocId("msg"), delivery: "direct" };
+        void this.opts
+          .onPrompt(text, { resumeSessionId: state.dshSessionId }, { onSession: (dshId) => this.bindDshSession(state.id, dshId) })
+          .then((dshId) => {
+            if (dshId) this.bindDshSession(state.id, dshId);
+          });
+        this.sendJson(res, 200, located(admitted, this.opts.directory));
+        return;
+      }
+      if (method === "POST" && sub === "interrupt") {
+        this.sendJson(res, 200, {});
+        return;
+      }
+      if (method === "POST" && sub === "wait") {
+        this.sendJson(res, 200, {});
+        return;
+      }
+      if (method === "POST" && sub === "compact") {
+        this.sendJson(res, 200, {});
+        return;
+      }
+      if (method === "GET" && sub === "event") {
+        const state = this.sessions.get(sessionId);
+        if (this.sessionOr404(state, res)) {
+          this.sseHeaders(res);
+          state.sse.add(res);
+          res.write(": connected\n\n");
+          req.on("close", () => state.sse.delete(res));
+        }
+        return;
+      }
+      if (method === "GET" && sub === "message") {
+        const state = this.sessions.get(sessionId);
+        if (this.sessionOr404(state, res)) {
+          const limit = Number(url.searchParams.get("limit") ?? 50);
+          const messages = state.messages.slice(-limit);
+          this.sendJson(res, 200, located({ data: messages, cursor: {} }, this.opts.directory));
+        }
+        return;
+      }
+      if (method === "GET" && sub === "todo") {
+        const state = this.sessions.get(sessionId);
+        if (this.sessionOr404(state, res)) {
+          this.sendJson(res, 200, located({ data: [] }, this.opts.directory));
+        }
+        return;
+      }
+      if (method === "GET" && sub === "diff") {
+        const state = this.sessions.get(sessionId);
+        if (this.sessionOr404(state, res)) {
+          this.sendJson(res, 200, located({ data: [] }, this.opts.directory));
+        }
+        return;
+      }
+      if (method === "GET" && sub === "context") {
+        const state = this.sessions.get(sessionId);
+        if (this.sessionOr404(state, res)) {
+          this.sendJson(res, 200, located(state.messages, this.opts.directory));
+        }
+        return;
+      }
+      if (method === "GET" && sub === "history") {
+        const state = this.sessions.get(sessionId);
+        if (this.sessionOr404(state, res)) {
+          this.sendJson(res, 200, located({ data: [], hasMore: false }, this.opts.directory));
+        }
+        return;
+      }
+      if (method === "POST" && sub === "agent") {
+        this.sendJson(res, 200, {});
+        return;
+      }
+      if (method === "POST" && sub === "model") {
+        this.sendJson(res, 200, {});
+        return;
+      }
+      this.sendJson(res, 404, { _tag: "NotFoundError", message: `no route: ${method} ${path}` });
+      return;
+    }
+    if (path === "/api/session/active" && method === "GET") {
+      const active: Record<string, { type: "running" }> = {};
+      for (const [id, state] of this.sessions) {
+        if (state.busy) active[id] = { type: "running" };
+      }
+      this.sendJson(res, 200, located(active, this.opts.directory));
+      return;
+    }
+    if (path === "/api/session" && method === "GET") {
+      const list = Array.from(this.sessions.values()).map((s) => this.infoOf(s));
+      this.sendJson(res, 200, located({ data: list, cursor: {} }, this.opts.directory));
+      return;
+    }
+    if (path === "/api/session" && method === "POST") {
+      const payload = body ? safeParse(body) : {};
+      const id = (payload.id as string) ?? ocId("ses");
+      const state = this.getOrCreateSession(id, this.opts.directory);
+      this.sendJson(res, 200, located(this.infoOf(state), this.opts.directory));
+      return;
+    }
+
+    // ── 旧路径 ──
+    if (path === "/path" && method === "GET") {
+      this.sendJson(res, 200, {
+        home: "/home",
+        state: this.opts.directory + "/.oc-state",
+        config: this.opts.directory + "/.oc-config",
+        worktree: this.opts.directory,
+        directory: this.opts.directory,
+      });
+      return;
+    }
+    if (path === "/project/current" && method === "GET") {
+      this.sendJson(res, 200, {
+        id: projectIdOf(this.opts.directory),
+        worktree: this.opts.directory,
+        time: { created: Date.now() },
+        sandboxes: [],
+      });
+      return;
+    }
+    if (path === "/config/providers" && method === "GET") {
+      const provider = this.legacyProvider();
+      this.sendJson(res, 200, { providers: provider ? [provider] : [], default: {} });
+      return;
+    }
+    if (path === "/provider" && method === "GET") {
+      const provider = this.legacyProvider();
+      this.sendJson(res, 200, {
+        all: provider ? [provider] : [],
+        default: {},
+        connected: provider ? [provider.id] : [],
+      });
+      return;
+    }
+    if (path === "/experimental/capabilities" && method === "GET") {
+      this.sendJson(res, 200, { backgroundSubagents: false });
+      return;
+    }
+    if (path === "/experimental/console" && method === "GET") {
+      this.sendJson(res, 200, { consoleManagedProviders: [], switchableOrgCount: 0 });
+      return;
+    }
+    if (path === "/experimental/workspace" && method === "GET") {
+      this.sendJson(res, 200, { workspaces: [], current: undefined });
+      return;
+    }
+    if (path === "/agent" && method === "GET") {
+      this.sendJson(res, 200, [
+        {
+          name: "build",
+          description: "Code generation and editing agent",
+          mode: "primary",
+          builtIn: true,
+          permission: { edit: "allow", bash: {} },
+          tools: {},
+          options: {},
+        },
+      ]);
+      return;
+    }
+    if (path === "/config" && method === "GET") {
+      this.sendJson(res, 200, {});
+      return;
+    }
+    if (path === "/session" && method === "GET") {
+      const list = Array.from(this.sessions.values()).map((s) => this.legacySession(s));
+      this.sendJson(res, 200, list);
+      return;
+    }
+    if (path === "/session" && method === "POST") {
+      const payload = body ? safeParse(body) : {};
+      const id = (payload.id as string) ?? ocId("ses");
+      const state = this.getOrCreateSession(id, this.opts.directory);
+      this.sendJson(res, 200, this.legacySession(state));
+      return;
+    }
+    if (path === "/session/status" && method === "GET") {
+      this.sendJson(res, 200, {});
+      return;
+    }
+    if (path === "/provider/auth" && method === "GET") {
+      this.sendJson(res, 200, {});
+      return;
+    }
+    if (path === "/vcs" && method === "GET") {
+      this.sendJson(res, 200, { branch: undefined, provider: undefined, repo: undefined });
+      return;
+    }
+    if (path === "/command" && method === "GET") {
+      this.sendJson(res, 200, []);
+      return;
+    }
+    if (path === "/lsp" && method === "GET") {
+      this.sendJson(res, 200, []);
+      return;
+    }
+    if (path === "/mcp" && method === "GET") {
+      this.sendJson(res, 200, {});
+      return;
+    }
+    if (path === "/experimental/resource" && method === "GET") {
+      this.sendJson(res, 200, {});
+      return;
+    }
+    if (path === "/formatter" && method === "GET") {
+      this.sendJson(res, 200, []);
+      return;
+    }
+    if (path === "/global/event" && method === "GET") {
+      this.sseHeaders(res);
+      this.globalSse.add(res);
+      res.write(": connected\n\n");
+      req.on("close", () => this.globalSse.delete(res));
+      return;
+    }
+    // 旧 /session/:id/* 子路由
+    const legacySessionMatch = path.match(/^\/session\/([^/]+)(?:\/([^/]+))?$/);
+    if (legacySessionMatch) {
+      const sessionId = legacySessionMatch[1]!;
+      const sub = legacySessionMatch[2];
+      if (method === "GET" && !sub) {
+        const state = this.sessions.get(sessionId);
+        if (this.sessionOr404(state, res)) {
+          this.sendJson(res, 200, this.legacySession(state));
+        }
+        return;
+      }
+      if (method === "GET" && sub === "message") {
+        const state = this.sessions.get(sessionId);
+        if (this.sessionOr404(state, res)) {
+          this.sendJson(res, 200, state.messages);
+        }
+        return;
+      }
+      if (method === "POST" && sub === "message") {
+        // 发送消息（旧协议）：body {parts: [{type:"text", text}]}
+        const state = this.sessions.get(sessionId) ?? this.getOrCreateSession(sessionId, this.opts.directory);
+        const payload = body ? safeParse(body) : {};
+        const parts = Array.isArray(payload.parts) ? payload.parts : [];
+        const textPart = parts.find((p: unknown) => (p as { type?: string })?.type === "text") as { text?: string } | undefined;
+        const text = textPart?.text ?? "";
+        if (!text) {
+          this.sendJson(res, 400, { _tag: "BadRequestError", message: "empty message" });
+          return;
+        }
+        // 用户消息立即落库并推送
+        const messageId = ocId("msg");
+        const now = Date.now();
+        const sel = this.selection();
+        const info: LegacyMessageInfo = {
+          id: messageId,
+          sessionID: state.id,
+          role: "user",
+          time: { created: now, updated: now },
+          agent: "build",
+          model: { providerID: sel?.providerID ?? "provider", modelID: sel?.id ?? "model" },
+        };
+        state.messages.push({
+          info,
+          parts: [{ id: ocId("text"), sessionID: state.id, messageID: messageId, type: "text", text, time: { start: now, end: now } }],
+        });
+        this.pushSessionEvent(state, { type: "message.updated", info });
+        // 触发 DSH agent
+        void this.opts
+          .onPrompt(text, { resumeSessionId: state.dshSessionId }, { onSession: (dshId) => this.bindDshSession(state.id, dshId) })
+          .then((dshId) => {
+            if (dshId) this.bindDshSession(state.id, dshId);
+          });
+        // 响应占位 assistant 消息（TUI 期待 {info, parts}）
+        const pendingId = ocId("msg");
+        const sel2 = this.selection();
+        const placeholder: LegacyMessageInfo = {
+          id: pendingId,
+          sessionID: state.id,
+          role: "assistant",
+          time: { created: now },
+          agent: "build",
+          model: { providerID: sel2?.providerID ?? "provider", modelID: sel2?.id ?? "model" },
+          parentID: messageId,
+          modelID: sel2?.id,
+          providerID: sel2?.providerID,
+          mode: "primary",
+          path: { cwd: state.directory, root: state.directory },
+          cost: 0,
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        };
+        this.sendJson(res, 200, { info: placeholder, parts: [] });
+        return;
+      }
+      if (method === "GET" && sub === "todo") {
+        this.sendJson(res, 200, []);
+        return;
+      }
+      if (method === "GET" && sub === "diff") {
+        this.sendJson(res, 200, { files: [] });
+        return;
+      }
+      if (method === "POST" && sub === "abort") {
+        this.sendJson(res, 200, {});
+        return;
+      }
+      if (method === "POST" && sub === "summarize") {
+        this.sendJson(res, 200, {});
+        return;
+      }
+      if (method === "POST" && sub === "command") {
+        this.sendJson(res, 200, {});
+        return;
+      }
+      if (method === "POST" && sub === "shell") {
+        this.sendJson(res, 200, {});
+        return;
+      }
+      if (method === "POST" && sub === "prompt_async") {
+        const state = this.sessions.get(sessionId) ?? this.getOrCreateSession(sessionId, this.opts.directory);
+        const payload = body ? safeParse(body) : {};
+        const prompt = payload.prompt as string | { text?: string } | undefined;
+        const text = typeof prompt === "string" ? prompt : (prompt?.text ?? "");
+        if (text) {
+          void this.opts
+            .onPrompt(text, { resumeSessionId: state.dshSessionId }, { onSession: (dshId) => this.bindDshSession(state.id, dshId) })
+            .then((dshId) => {
+              if (dshId) this.bindDshSession(state.id, dshId);
+            });
+        }
+        this.sendJson(res, 200, { ok: true });
+        return;
+      }
+      this.sendJson(res, 404, { _tag: "NotFoundError", message: `no route: ${method} ${path}` });
+      return;
+    }
+
+    // 未实现 → opencode 错误格式
+    this.sendJson(res, 404, { _tag: "NotFoundError", message: `no route: ${method} ${path}` });
+  }
+
+  // ── 响应构造 ─────────────────────────────────────────────────────────────
+
+  private infoOf(state: SessionState): SessionInfo {
+    return makeSessionInfo({
+      id: state.id,
+      directory: state.directory,
+      title: state.title,
+      agent: "build",
+      model: this.selection(),
+      created: state.createdAt,
+      updated: state.updatedAt,
+    });
+  }
+
+  /** 旧协议 Session（/session 列表） */
+  private legacySession(state: SessionState): Record<string, unknown> {
+    const last = state.messages.at(-1);
+    const lastTime = last?.info.time.updated ?? state.updatedAt;
+    return {
+      id: state.id,
+      projectID: projectIdOf(state.directory),
+      directory: state.directory,
+      title: state.title,
+      version: "1",
+      time: { created: state.createdAt, updated: state.updatedAt, lastMessage: lastTime },
+    };
+  }
+
+  private legacySessionInfo(state: SessionState): Record<string, unknown> {
+    return {
+      id: state.id,
+      projectID: projectIdOf(state.directory),
+      directory: state.directory,
+      title: state.title,
+      version: "1",
+      time: { created: state.createdAt, updated: state.updatedAt },
+    };
+  }
+
+  private legacyProvider(): {
+    id: string;
+    name: string;
+    source: string;
+    env: string[];
+    options: Record<string, unknown>;
+    models: Record<string, LegacyModel>;
+  } | undefined {
+    const sel = this.selection();
+    if (!sel) return undefined;
+    const model = legacyModelFromV2({ id: sel.id, providerID: sel.providerID, name: sel.id });
+    return {
+      id: sel.providerID,
+      name: sel.providerID,
+      source: "config",
+      env: [],
+      options: {},
+      models: { [sel.id]: model },
+    };
+  }
+
+  /** 记录 DSH session id 与 opencode session id 的绑定（agent 创建后由 plugin 调用）。 */
+  bindDshSession(ocSessionId: string, dshSessionId: string): void {
+    const state = this.sessions.get(ocSessionId);
+    if (state) {
+      state.dshSessionId = dshSessionId;
+      state.updatedAt = Date.now();
+    }
+  }
+
+  getSessionIdByDsh(dshSessionId: string): string | undefined {
+    return this.findByDsh(dshSessionId)?.id;
+  }
+}
+
+function projectIdOf(directory: string): string {
+  return createHash("sha1").update(directory).digest("hex");
+}
+
+function userTextFromMessage(message: { content?: Array<{ type?: string; text?: string }> }): string {
+  const blocks = message.content ?? [];
+  return blocks
+    .filter((b) => b.type === "text" && typeof b.text === "string")
+    .map((b) => b.text as string)
+    .join("");
+}
+
+function toolResultText(message: { content?: Array<{ type?: string; text?: string }> }): string {
+  return userTextFromMessage(message);
+}
+
+function safeParse(text: string): Record<string, unknown> {
+  try {
+    const value = JSON.parse(text);
+    return value && typeof value === "object" ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+function readBody(req: IncomingMessage): Promise<string> {
+  return new Promise((resolve) => {
+    let data = "";
+    req.on("data", (chunk: Buffer) => {
+      data += chunk.toString("utf8");
+      if (data.length > 1_000_000) req.destroy();
+    });
+    req.on("end", () => resolve(data));
+    req.on("error", () => resolve(data));
+  });
+}

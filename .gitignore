@@ -4,6 +4,8 @@ dist/
 .npm-cache/
 .dsh-home/
 *.log
+raw*.bin
+*.tmp
 __pycache__/
 .go-home/
 .xdg-config/
@@ -11,3 +13,6 @@ __pycache__/
 opencode-fork/opencode
 opencode-fork/bridge-harness
 opencode-fork/
+.oc-sessions/
+.xdg-*/
+.*/
