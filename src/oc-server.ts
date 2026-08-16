@@ -10,6 +10,9 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
+import { appendFileSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
+import { dirname, join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import type { ModelSelection } from "@deepseek-ai/dsh-agent";
@@ -150,6 +153,22 @@ export interface OcServerOptions {
   listDshSessions?: () => Promise<Array<{ sessionId: string; title: string; views: import("./projection.js").MessageView[] }>>;
 }
 
+// ── 日志：写文件（终端保持干净；请求级日志需 DSH_OC_DEBUG=1）─────────────
+
+const ocLogDir = (): string => {
+  const dshHome = process.env.DSH_HOME ?? join(homedir(), ".dsh");
+  return join(dshHome, "logs");
+};
+
+function ocLog(message: string): void {
+  try {
+    mkdirSync(ocLogDir(), { recursive: true });
+    appendFileSync(join(ocLogDir(), "oc-server.log"), `${new Date().toISOString()} ${message}\n`);
+  } catch {
+    /* 日志失败不影响主流程 */
+  }
+}
+
 // ── server ─────────────────────────────────────────────────────────────────
 
 export class OcServer {
@@ -171,7 +190,7 @@ export class OcServer {
     await new Promise<void>((resolve) => this.http.listen(this.opts.port ?? 0, "127.0.0.1", resolve));
     const addr = this.http.address();
     this.port = typeof addr === "object" && addr ? addr.port : 0;
-    process.stderr.write(`[oc-server] listening on ${this.url}\n`);
+    ocLog(`[oc-server] listening on ${this.url}`);
     // 预热模型缓存
     const selection = this.opts.getSelection();
     if (selection) this.modelCache = { id: selection.model, providerID: selection.provider };
@@ -181,10 +200,10 @@ export class OcServer {
         try {
           this.hydrateSession(item.sessionId, item.title, item.views);
         } catch (error) {
-          process.stderr.write(`[oc-server] hydrate ${item.sessionId} failed: ${error instanceof Error ? error.message : String(error)}\n`);
+          ocLog(`[oc-server] hydrate ${item.sessionId} failed: ${error instanceof Error ? error.message : String(error)}`);
         }
       }
-      process.stderr.write(`[oc-server] hydrated ${list.length} sessions\n`);
+      ocLog(`[oc-server] hydrated ${list.length} sessions`);
     });
     return this.port;
   }
@@ -614,7 +633,7 @@ export class OcServer {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
     const path = url.pathname;
     const method = req.method ?? "GET";
-    process.stderr.write(`[oc-server] ${method} ${path}\n`);
+    if (process.env.DSH_OC_DEBUG === "1") ocLog(`[oc-server] ${method} ${path}`);
 
     // 读取 body
     const body = await readBody(req);
