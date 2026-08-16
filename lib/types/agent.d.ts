@@ -8,6 +8,8 @@ export interface AgentManagerOptions {
     resumeSessionId?: string;
     /** agent preset id（默认取 roster 的 default；undefined = roster 默认） */
     preset?: string;
+    /** 权限 preset（read-only / workspace-write / danger-full-access；来自 TUI 当前 agent） */
+    permissionPreset?: string;
 }
 export interface OwnedAgent {
     agent: Agent;
@@ -35,6 +37,8 @@ export declare class AgentManager {
     get agent(): Agent | undefined;
     /** 创建（或恢复）agent，返回是否新建。 */
     ensure(): Promise<OwnedAgent>;
+    /** 把 TUI 当前 agent 对应的权限 preset 应用到 DSH 会话（幂等：相同则无操作）。 */
+    private applyPermissionPreset;
     /** 发送一条用户消息（排队到 next-turn）。 */
     send(text: string): Promise<void>;
     /** 取消当前生成（Esc）。 */

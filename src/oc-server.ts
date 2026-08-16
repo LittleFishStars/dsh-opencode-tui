@@ -68,6 +68,35 @@ interface LegacyToolPart {
   time: { start: number; end?: number };
 }
 
+// ── 权限模式 agent（TUI Tab 轮换）→ DSH permission preset ────────────────
+// opencode 的 agent 选择在 TUI 里由 Tab 轮换（agent.cycle）；我们把每个
+// agent 映射为 DSH 的 sandbox preset，发消息时把 preset 应用到 DSH 会话。
+// 列表顺序即 TUI 初始选择与 Tab 轮换顺序：默认 workspace-write（与 DSH
+// 默认 preset 一致）→ 更严格 read-only → 更宽松 full-access → 循环。
+const PERMISSION_AGENTS: Record<string, string> = {
+  "read-only": "read-only",
+  "workspace-write": "workspace-write",
+  "full-access": "danger-full-access",
+};
+
+const DEFAULT_AGENT = "workspace-write";
+
+const AGENT_DESCRIPTIONS: Record<string, string> = {
+  "read-only": "Read-only sandbox: reads and searches allowed, writes require approval",
+  "workspace-write": "Write inside the workspace; wider retries require approval",
+  "full-access": "Full file access without approval prompts",
+};
+
+/** DSH preset 名 → TUI agent 名（未知/缺失回退默认）。 */
+function agentOfPreset(preset: string | undefined): string {
+  if (preset) {
+    for (const [agent, p] of Object.entries(PERMISSION_AGENTS)) {
+      if (p === preset) return agent;
+    }
+  }
+  return DEFAULT_AGENT;
+}
+
 type LegacyPart = LegacyTextPart | LegacyReasoningPart | LegacyToolPart;
 
 interface LegacyMessageInfo {
@@ -104,6 +133,8 @@ interface SessionState {
   createdAt: number;
   updatedAt: number;
   busy: boolean;
+  /** 当前选中的 agent（read-only / workspace-write / full-access；决定下条消息的 preset） */
+  currentAgent: string;
   messages: LegacyMessage[];
   /** 当前正在生成的 assistant 消息（增量构建） */
   pending?: PendingAssistant;
@@ -146,13 +177,13 @@ export interface OcServerOptions {
    *  hooks.onSession 必须在 send 之前同步调用（避免 turn/start 事件早于绑定而丢失）。 */
   onPrompt: (
     text: string,
-    opts: { resumeSessionId?: string },
+    opts: { resumeSessionId?: string; preset?: string },
     hooks: { onSession: (dshSessionId: string) => void },
   ) => Promise<string | undefined>;
   /** 获取当前模型选择（provider/model） */
   getSelection: () => ModelSelection | undefined;
   /** 查询 DSH 会话投影（启动时重建历史） */
-  listDshSessions?: () => Promise<Array<{ sessionId: string; title: string; views: import("./projection.js").MessageView[] }>>;
+  listDshSessions?: () => Promise<Array<{ sessionId: string; title: string; preset?: string; views: import("./projection.js").MessageView[] }>>;
 }
 
 // ── 日志：写文件（终端保持干净；请求级日志需 DSH_OC_DEBUG=1）─────────────
@@ -200,7 +231,7 @@ export class OcServer {
     void this.opts.listDshSessions?.().then((list) => {
       for (const item of list) {
         try {
-          this.hydrateSession(item.sessionId, item.title, item.views);
+          this.hydrateSession(item.sessionId, item.title, item.preset, item.views);
         } catch (error) {
           ocLog(`[oc-server] hydrate ${item.sessionId} failed: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -273,6 +304,7 @@ export class OcServer {
         createdAt: Date.now(),
         updatedAt: Date.now(),
         busy: false,
+        currentAgent: DEFAULT_AGENT,
         messages: [],
         sse: new Set(),
         permissions: new Map(),
@@ -284,14 +316,15 @@ export class OcServer {
   }
 
   /** 把 DSH 会话视图重建为 opencode 会话状态（进程内；ocSessionId 由 dshSessionId 稳定哈希）。 */
-  private hydrateSession(dshSessionId: string, title: string, views: import("./projection.js").MessageView[]): void {
+  private hydrateSession(dshSessionId: string, title: string, preset: string | undefined, views: import("./projection.js").MessageView[]): void {
     const ocSessionId = ocIdFromDsh(dshSessionId);
     const existing = this.sessions.get(ocSessionId);
     const state = existing ?? this.getOrCreateSession(ocSessionId, this.opts.directory);
     state.dshSessionId = dshSessionId;
     if (title) state.title = title;
+    if (preset) state.currentAgent = agentOfPreset(preset);
     if (existing) return;
-    state.messages = viewsToLegacyMessages(ocSessionId, views, this.selection());
+    state.messages = viewsToLegacyMessages(ocSessionId, views, this.selection(), state.currentAgent);
     for (const m of state.messages) {
       state.updatedAt = Math.max(state.updatedAt, m.info.time.updated ?? m.info.time.created);
     }
@@ -316,7 +349,7 @@ export class OcServer {
         const sel = this.selection() ?? { id: "model", providerID: "provider" };
         const pending: PendingAssistant = {
           messageId: ocId("msg"),
-          agent: "build",
+          agent: state.currentAgent,
           model: sel,
           startedAt: Date.now(),
           text: "",
@@ -335,7 +368,7 @@ export class OcServer {
           sessionID: state.id,
           role: "assistant",
           time: { created: pending.startedAt, updated: pending.startedAt },
-          agent: "build",
+          agent: state.currentAgent,
           model: { providerID: sel.providerID, modelID: sel.id },
           modelID: sel.id,
           providerID: sel.providerID,
@@ -597,7 +630,7 @@ export class OcServer {
           sessionID: state.id,
           role: "user",
           time: { created: now, updated: now },
-          agent: "build",
+          agent: state.currentAgent,
           model: { providerID: sel?.providerID ?? "provider", modelID: sel?.id ?? "model" },
         };
         state.messages.push({
@@ -760,7 +793,11 @@ export class OcServer {
       return;
     }
     if (path === "/api/agent" && method === "GET") {
-      const agents: AgentInfo[] = [makeAgentInfo("build", "Code generation and editing agent")];
+      const agents: AgentInfo[] = [
+        makeAgentInfo("workspace-write", AGENT_DESCRIPTIONS["workspace-write"]),
+        makeAgentInfo("read-only", AGENT_DESCRIPTIONS["read-only"]),
+        makeAgentInfo("full-access", AGENT_DESCRIPTIONS["full-access"]),
+      ];
       this.sendJson(res, 200, located(agents, this.opts.directory));
       return;
     }
@@ -825,9 +862,10 @@ export class OcServer {
           this.sendJson(res, 400, { _tag: "InvalidRequestError", message: "empty prompt" });
           return;
         }
+        if (typeof payload.agent === "string" && payload.agent in PERMISSION_AGENTS) state.currentAgent = payload.agent;
         const admitted = { messageID: ocId("msg"), delivery: "direct" };
         void this.opts
-          .onPrompt(text, { resumeSessionId: state.dshSessionId }, { onSession: (dshId) => this.bindDshSession(state.id, dshId) })
+          .onPrompt(text, { resumeSessionId: state.dshSessionId, preset: PERMISSION_AGENTS[state.currentAgent] }, { onSession: (dshId) => this.bindDshSession(state.id, dshId) })
           .then((dshId) => {
             if (dshId) this.bindDshSession(state.id, dshId);
           });
@@ -1037,8 +1075,26 @@ export class OcServer {
     if (path === "/agent" && method === "GET") {
       this.sendJson(res, 200, [
         {
-          name: "build",
-          description: "Code generation and editing agent",
+          name: "workspace-write",
+          description: AGENT_DESCRIPTIONS["workspace-write"],
+          mode: "primary",
+          builtIn: true,
+          permission: { edit: "allow", bash: {} },
+          tools: {},
+          options: {},
+        },
+        {
+          name: "read-only",
+          description: AGENT_DESCRIPTIONS["read-only"],
+          mode: "primary",
+          builtIn: true,
+          permission: { edit: "allow", bash: {} },
+          tools: {},
+          options: {},
+        },
+        {
+          name: "full-access",
+          description: AGENT_DESCRIPTIONS["full-access"],
           mode: "primary",
           builtIn: true,
           permission: { edit: "allow", bash: {} },
@@ -1123,9 +1179,10 @@ export class OcServer {
         return;
       }
       if (method === "POST" && sub === "message") {
-        // 发送消息（旧协议）：body {parts: [{type:"text", text}]}
+        // 发送消息（旧协议）：body {agent?, parts: [{type:"text", text}]}
         const state = this.sessions.get(sessionId) ?? this.getOrCreateSession(sessionId, this.opts.directory);
         const payload = body ? safeParse(body) : {};
+        if (typeof payload.agent === "string" && payload.agent in PERMISSION_AGENTS) state.currentAgent = payload.agent;
         const parts = Array.isArray(payload.parts) ? payload.parts : [];
         const textPart = parts.find((p: unknown) => (p as { type?: string })?.type === "text") as { text?: string } | undefined;
         const text = textPart?.text ?? "";
@@ -1142,7 +1199,7 @@ export class OcServer {
           sessionID: state.id,
           role: "user",
           time: { created: now, updated: now },
-          agent: "build",
+          agent: state.currentAgent,
           model: { providerID: sel?.providerID ?? "provider", modelID: sel?.id ?? "model" },
         };
         state.messages.push({
@@ -1150,9 +1207,13 @@ export class OcServer {
           parts: [{ id: ocId("text"), sessionID: state.id, messageID: messageId, type: "text", text, time: { start: now, end: now } }],
         });
         this.pushSessionEvent(state, { type: "message.updated", properties: { info } });
-        // 触发 DSH agent
+        // 触发 DSH agent（当前 agent 映射的 preset 应用到 DSH 会话）
         void this.opts
-          .onPrompt(text, { resumeSessionId: state.dshSessionId }, { onSession: (dshId) => this.bindDshSession(state.id, dshId) })
+          .onPrompt(
+            text,
+            { resumeSessionId: state.dshSessionId, preset: PERMISSION_AGENTS[state.currentAgent] },
+            { onSession: (dshId) => this.bindDshSession(state.id, dshId) },
+          )
           .then((dshId) => {
             if (dshId) this.bindDshSession(state.id, dshId);
           });
@@ -1164,7 +1225,7 @@ export class OcServer {
           sessionID: state.id,
           role: "assistant",
           time: { created: now },
-          agent: "build",
+          agent: state.currentAgent,
           model: { providerID: sel2?.providerID ?? "provider", modelID: sel2?.id ?? "model" },
           parentID: messageId,
           modelID: sel2?.id,
@@ -1263,7 +1324,7 @@ export class OcServer {
       id: state.id,
       directory: state.directory,
       title: state.title,
-      agent: "build",
+      agent: state.currentAgent,
       model: this.selection(),
       created: state.createdAt,
       updated: state.updatedAt,
@@ -1344,6 +1405,7 @@ function viewsToLegacyMessages(
   sessionID: string,
   views: import("./projection.js").MessageView[],
   sel: ModelRef | undefined,
+  agent: string,
 ): LegacyMessage[] {
   const out: LegacyMessage[] = [];
   const model = { providerID: sel?.providerID ?? "provider", modelID: sel?.id ?? "model" };
@@ -1356,7 +1418,7 @@ function viewsToLegacyMessages(
           sessionID,
           role: "user",
           time: { created: v.time, updated: v.time },
-          agent: "build",
+          agent,
           model,
         },
         parts: [
@@ -1369,7 +1431,7 @@ function viewsToLegacyMessages(
         sessionID,
         role: "assistant",
         time: { created: v.time, updated: v.endedAt ?? v.time, completed: v.endedAt },
-        agent: "build",
+        agent,
         model,
         parentID: out.findLast((m) => m.info.role === "user")?.info.id,
         modelID: v.provider ? v.model : sel?.id,

@@ -75,6 +75,8 @@ export interface SessionMeta {
   updatedAt: number;
   messageCount: number;
   cwd?: string;
+  /** 最近一次 permission/preset 事件记录的 preset 名（read-only / workspace-write / danger-full-access） */
+  preset?: string;
 }
 
 /** 从事件里取用户消息文本（text 块拼接）。 */
@@ -338,6 +340,14 @@ export function foldSessionMeta(
 ): SessionMeta {
   const title = titleFromEvents(events);
   const { updatedAt, messageCount } = sessionStats(events);
+  let preset: string | undefined;
+  for (const event of events) {
+    // permission/preset 不在 SessionEvent 联合类型里（DSH 类型未同步），按未知事件处理
+    if ((event as { type?: string }).type === "permission/preset") {
+      const data = (event as unknown as { data?: { preset?: string } }).data;
+      if (data?.preset) preset = data.preset;
+    }
+  }
   let fallback = "";
   if (!title) {
     for (const event of events) {
@@ -357,6 +367,7 @@ export function foldSessionMeta(
     createdAt,
     updatedAt: updatedAt || createdAt,
     messageCount,
+    preset,
   };
 }
 

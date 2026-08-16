@@ -94,8 +94,8 @@ function apply(ctx: Context, config: PluginConfig) {
   let activeManager: AgentManager | undefined;
 
   // 历史会话重建：从 DSH 持久层加载会话投影
-  const listDshSessions = async (): Promise<Array<{ sessionId: string; title: string; views: MessageView[] }>> => {
-    const out: Array<{ sessionId: string; title: string; views: MessageView[] }> = [];
+  const listDshSessions = async (): Promise<Array<{ sessionId: string; title: string; preset?: string; views: MessageView[] }>> => {
+    const out: Array<{ sessionId: string; title: string; preset?: string; views: MessageView[] }> = [];
     try {
       const records = await ctx.sessionQuery.listSessions();
       for (const record of records) {
@@ -106,6 +106,7 @@ function apply(ctx: Context, config: PluginConfig) {
           out.push({
             sessionId: header.id,
             title: folded.title,
+            preset: folded.preset,
             views: projectEvents(inspection.events),
           });
         } catch {
@@ -130,6 +131,7 @@ function apply(ctx: Context, config: PluginConfig) {
         selection,
         cwd,
         preset: config.preset ?? process.env.DSH_OPENCODE_TUI_PRESET,
+        permissionPreset: opts.preset,
         resumeSessionId: opts.resumeSessionId,
       });
       activeManager = manager;

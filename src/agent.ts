@@ -18,6 +18,8 @@ export interface AgentManagerOptions {
   resumeSessionId?: string;
   /** agent preset id（默认取 roster 的 default；undefined = roster 默认） */
   preset?: string;
+  /** 权限 preset（read-only / workspace-write / danger-full-access；来自 TUI 当前 agent） */
+  permissionPreset?: string;
 }
 
 export interface OwnedAgent {
@@ -112,7 +114,26 @@ export class AgentManager {
       };
     }
     await this.owned.agent.whenIdle();
+    await this.applyPermissionPreset(this.owned.agent);
     return this.owned;
+  }
+
+  /** 把 TUI 当前 agent 对应的权限 preset 应用到 DSH 会话（幂等：相同则无操作）。 */
+  private async applyPermissionPreset(agent: Agent): Promise<void> {
+    const preset = this.opts.permissionPreset;
+    if (!preset) return;
+    const presets = this.ctx.get("permissionPresets") as
+      | { names: readonly string[]; set(session: unknown, name: string): void }
+      | undefined;
+    if (!presets || !presets.names.includes(preset)) {
+      this.ctx.logger?.warn?.(`dsh-opencode-tui: permission preset "${preset}" unavailable — keeping current`);
+      return;
+    }
+    try {
+      presets.set(agent.session, preset);
+    } catch (error) {
+      this.ctx.logger?.warn?.(`dsh-opencode-tui: failed to apply permission preset ${preset}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
 
   /** 发送一条用户消息（排队到 next-turn）。 */

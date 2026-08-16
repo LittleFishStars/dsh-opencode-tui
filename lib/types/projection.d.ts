@@ -72,6 +72,8 @@ export interface SessionMeta {
     updatedAt: number;
     messageCount: number;
     cwd?: string;
+    /** 最近一次 permission/preset 事件记录的 preset 名（read-only / workspace-write / danger-full-access） */
+    preset?: string;
 }
 /**
  * 增量投影：把单个会话事件应用到消息列表上。

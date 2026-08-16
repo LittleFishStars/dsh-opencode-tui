@@ -9,6 +9,7 @@ export interface OcServerOptions {
      *  hooks.onSession 必须在 send 之前同步调用（避免 turn/start 事件早于绑定而丢失）。 */
     onPrompt: (text: string, opts: {
         resumeSessionId?: string;
+        preset?: string;
     }, hooks: {
         onSession: (dshSessionId: string) => void;
     }) => Promise<string | undefined>;
@@ -18,6 +19,7 @@ export interface OcServerOptions {
     listDshSessions?: () => Promise<Array<{
         sessionId: string;
         title: string;
+        preset?: string;
         views: import("./projection.js").MessageView[];
     }>>;
 }
