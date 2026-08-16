@@ -190,10 +190,12 @@ export function applyEvent(messages: MessageView[], event: SessionEvent): boolea
       const last = messages[messages.length - 1];
       if (last?.kind === "assistant") {
         // 同一轮 assistant/message 落地：以权威内容为准
+        // （reasoning 随消息落地结束，endedAt 保证重启后 reasoning part 有 time.end）
         messages[messages.length - 1] = {
           ...last,
           text,
           assembled: true,
+          endedAt: last.endedAt ?? event.time,
           seq: event.seq,
           model: source?.model,
           provider: source?.provider,
@@ -210,6 +212,7 @@ export function applyEvent(messages: MessageView[], event: SessionEvent): boolea
         thinking: "",
         assembled: true,
         finished: false,
+        endedAt: event.time,
         model: source?.model,
         provider: source?.provider,
         empty: text.trim() === "",
@@ -269,22 +272,27 @@ export function applyEvent(messages: MessageView[], event: SessionEvent): boolea
     }
     case "turn/end": {
       const data = event.data as { reason?: { kind?: string } };
-      // 标记最后一个未完成 assistant 卡片
+      // 标记本轮所有未完成 assistant 卡片——工具轮会产生多条 assistant 卡片
+      // （思考+工具调用 → 工具结果 → 最终回复），中间卡片的 endedAt 若缺失，
+      // 重启 hydrate 后 reasoning part 没有 time.end，TUI 会一直显示 Thinking 转圈。
+      // 遇 user 消息或已 finished 卡片即停（不跨轮次）。
+      let changed = false;
       for (let i = messages.length - 1; i >= 0; i--) {
         const m = messages[i];
-        if (m?.kind === "assistant" && !m.finished) {
-          messages[i] = {
-            ...m,
-            finished: true,
-            reason: data.reason?.kind,
-            endedAt: event.time,
-            seq: event.seq,
-          };
-          return true;
-        }
-        if (m?.kind === "assistant") break;
+        if (!m || m.kind === "user") break;
+        if (m.kind !== "assistant") continue;
+        if (m.finished) break;
+        messages[i] = {
+          ...m,
+          finished: true,
+          reason: data.reason?.kind,
+          // 已由 assistant/message 落地时间兜底的卡片保留更精确的时间
+          endedAt: m.endedAt ?? event.time,
+          seq: event.seq,
+        };
+        changed = true;
       }
-      return false;
+      return changed;
     }
     default:
       return false;
