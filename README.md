@@ -71,8 +71,10 @@ TUI 实测请求（fork dev lildax）：
 - 发送消息：`POST /session` → `POST /session/:id/message`
   （body `{parts: [{type:"text", text}]}`，响应 `{info, parts}`）
 - 消息列表：`GET /session/:id/message`（`[{info, parts}]`）
-- 事件流：`GET /global/event`（SSE，`message.updated` / `message.part.updated` /
-  `session.status` / `session.updated`）
+- 事件流：`GET /global/event`（SSE，data 为 v2 GlobalEvent 信封
+  `{directory, payload: {type, properties}}`；事件含 `message.updated` /
+  `message.part.updated` / `session.status` / `session.updated` /
+  `permission.asked` / `permission.replied`）
 - 旧路径 404 时 TUI 用 `gracefulFetch` 兜底（`/config/providers` `/provider`
   `/agent` `/config` 有默认值），其余 404 按 TUI 容错处理
 
@@ -80,11 +82,17 @@ TUI 实测请求（fork dev lildax）：
 `content` 字段，需要 `agent`/`model`/`parentID`/`mode`/`path`/`cost`/`tokens`
 等），否则会话页渲染崩溃（TUI 弹崩溃对话框）。
 
+启动时从 DSH 持久层重建历史会话（`hydrate`，`ses_<sha1>` 稳定 id），打开历史
+会话发消息会 resume 原 DSH 会话继续。审批走 v2 `PermissionRequest`：
+DSH `approval/request` → `permission.asked` 事件 → TUI 权限对话框 →
+`POST /permission/:requestID/reply`（`{reply: "once"|"always"|"reject"}`）。
+
 ## 测试
 
 `scripts/` 下的 pty 测试（python + term_responder 应答器）：
 - `pty-test13.py`：文本回复端到端（发送 → DSH agent 回复 → TUI 渲染）
 - `pty-test14.py`：工具调用端到端（bash → 输出渲染）
+- `pty-test16.py`：审批端到端（写 /tmp 触发 approval → TUI 对话框 → Enter 批准 → 工具执行）
 - `term_responder.py`：OpenTUI 终端查询应答（`threaded=False` 时同步模式，
   与捕获主循环共用 fd，避免多 reader 竞争死锁）
 
