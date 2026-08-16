@@ -114,16 +114,18 @@ opencode（`opencode-fork/`），在其中实现了一套 **dsh bridge**，把�
 └─────────────────────────────────────────────┘
 ```
 
-### 构建与运行
+### 启动方式（两个入口）
 
 ```bash
-# 1) 编译 fork（Go ≥ 1.24）
-cd opencode-fork && go build -o opencode .
+# 入口一（推荐）：opencode 原版 TUI（Go 中间层）
+dsh-opencode-tui                    # 自动编译 fork 并 DSH_BRIDGE=1 启动
+# 或手工：cd opencode-fork && go build -o opencode . && DSH_BRIDGE=1 ./opencode
 
-# 2) 启动（DSH_BRIDGE=1 切换桥装配）
-DSH_BRIDGE=1 ./opencode
+# 入口二：自研 Ink TUI（黑背景/灰侧栏/thinking与工具折叠版）
+dsh --profile dsh-opencode-tui
 ```
 
+桥子进程默认使用 `dsh-opencode-tui` profile（`DSH_BRIDGE_PROFILE` 可覆盖）。
 首次运行会在 `~/.config/opencode` 生成 opencode 自己的配置；会话与消息
 全部存在 DSH 的 `~/.dsh/sessions`（与 dsh web 互通）。Ctrl+C 退出对话框
 默认选 No（防误退），Tab 切到 Yes 后 Enter 退出——这是 opencode 原版行为。
