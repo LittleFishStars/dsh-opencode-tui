@@ -10,9 +10,10 @@ opencode 的 TUI 是纯 HTTP 客户端：它通过一组 REST 端点（旧路径
 `/config/providers`、`/global/event` 等 + v2 `/api/*`）与 SSE 事件流与 server 通信。
 本仓库实现了一个 **opencode server 协议兼容层**（`src/oc-server.ts`），跑在 dsh
 插件进程内，把 TUI 的请求映射到 dsh 的 agent/会话；TUI 二进制则是 opencode 官方
-仓库（anomalyco/opencode，dev 分支）源码构建的 `lildax`（`opencode-fork/`，独立 git
-仓库，仅有两处最小 patch：`default.ts` 支持 `OPENCODE_URL` 直连、`home.tsx` 布局
-在部分终端下不渲染的修复）。
+仓库（anomalyco/opencode，dev 分支）界面代码的**精简版**（`tui/`）：只保留 TUI
+及其直接依赖（tui/ui/plugin/sdk/core/schema/llm 等包），并裁剪 CLI 为仅直连
+模式；内置插件（侧边栏、提问对话框）与 `OPENCODE_URL` 直连由 fork 的
+`packages/cli/src/tui.ts` 提供。
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -26,7 +27,7 @@ opencode 的 TUI 是纯 HTTP 客户端：它通过一组 REST 端点（旧路径
 └──────────────────────┬─────────────────────────────────────┘
                        │ OPENCODE_URL=http://127.0.0.1:<port>
 ┌──────────────────────▼─────────────────────────────────────┐
-│ opencode-fork lildax（opencode 原版 TUI，零改动直连）       │
+│ tui/ lildax（opencode 界面精简版，直连兼容层）              │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -43,9 +44,9 @@ dsh --profile dsh-opencode-tui
 
 要求：
 - `dsh-opencode-tui` profile 已安装本包（`dsh plugin --profile dsh-opencode-tui add <本仓库路径>`）
-- opencode TUI 二进制：默认找 `opencode-fork/packages/cli/dist/cli-linux-x64/bin/lildax`
-  （本仓库）或 `$DSH_HOME/opencode-fork/...` 同路径，缺失时按报错提示构建：
-  `cd opencode-fork/packages/cli && bun run script/build.ts --single --skip-install`
+- opencode TUI 二进制：默认找 `tui/packages/cli/dist/cli-linux-x64/bin/lildax`
+  （本仓库）或 `$DSH_HOME/tui/...` 同路径，缺失时按报错提示构建：
+  `cd tui/packages/cli && bun run script/build.ts`
 
 配置（profile 的 `config`）：
 - `binary`：lildax 路径

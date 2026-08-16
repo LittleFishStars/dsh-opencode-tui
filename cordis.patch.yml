@@ -159,8 +159,8 @@
     - id: dsh-opencode-tui
       name: dsh-opencode-tui
       config:
-        # opencode fork 二进制路径（默认：包内 ../opencode-fork/opencode 或
-        # $DSH_HOME/opencode-fork/opencode，缺失时自动 go build）。
-        # binary: /absolute/path/to/opencode
+        # lildax 二进制路径（默认：包内 tui/packages/cli/dist/.../lildax
+        # 或 $DSH_HOME/tui/...，缺失时按报错提示 bun run script/build.ts 构建）。
+        # binary: /absolute/path/to/lildax
         # 桥子进程使用的 profile 名（默认 dsh-opencode-tui）。
         # bridgeProfile: dsh-opencode-tui

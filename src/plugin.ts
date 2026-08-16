@@ -52,8 +52,11 @@ interface PluginConfig {
   serverPort?: number;
 }
 
-/** 包内 fork 目录（开发/本地 link 模式）。 */
-const PACKAGE_FORK = join(dirname(fileURLToPath(import.meta.url)), "..", "opencode-fork");
+/**
+ * 包内 TUI 目录（opencode 界面代码精简版；开发/本地 link 模式）。
+ * 结构：tui/packages/{cli,tui,ui,plugin,sdk,core,schema,llm,...}
+ */
+const PACKAGE_TUI = join(dirname(fileURLToPath(import.meta.url)), "..", "tui");
 
 /** fork dev 构建产物相对路径（bun build --single 输出）。 */
 const LILDAX_REL = join("packages", "cli", "dist", "cli-linux-x64", "bin", "lildax");
@@ -62,8 +65,11 @@ const LILDAX_REL = join("packages", "cli", "dist", "cli-linux-x64", "bin", "lild
 function resolveBinary(config: PluginConfig): string | null {
   const candidates: string[] = [];
   if (config.binary) candidates.push(config.binary);
-  candidates.push(join(PACKAGE_FORK, LILDAX_REL));
+  candidates.push(join(PACKAGE_TUI, LILDAX_REL));
+  // 旧版目录名（opencode-fork）兼容
+  candidates.push(join(dirname(fileURLToPath(import.meta.url)), "..", "opencode-fork", LILDAX_REL));
   const dshHome = process.env.DSH_HOME ?? join(homedir(), ".dsh");
+  candidates.push(join(dshHome, "tui", LILDAX_REL));
   candidates.push(join(dshHome, "opencode-fork", LILDAX_REL));
   for (const c of candidates) {
     if (existsSync(c)) return c;
@@ -83,7 +89,7 @@ function apply(ctx: Context, config: PluginConfig) {
   if (!binary || !existsSync(binary)) {
     ctx.logger.error(
       `dsh-opencode-tui: 未找到 opencode TUI 二进制（${binary ?? "?"}）。` +
-        `请先构建：cd opencode-fork/packages/cli && bun run script/build.ts --single --skip-install`,
+        `请先构建：cd tui/packages/cli && bun run script/build.ts`,
     );
     return;
   }
