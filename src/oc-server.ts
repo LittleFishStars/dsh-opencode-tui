@@ -145,7 +145,30 @@ interface SessionState {
   permissions: Map<string, (outcome: "allowed-once" | "rejected") => void>;
   /** 挂起的用户提问（requestID → 应答回调） */
   questions: Map<string, (answer: unknown) => void>;
+  /** 会话 todo 列表（DSH todo/write → opencode Todo；侧边栏 Todo 区） */
+  todos: Array<{ id: string; content: string; status: string; priority: string }>;
+  /** 会话修改的文件（工具调用提取；侧边栏 Modified Files 区） */
+  diffs: Array<{ file: string; before: string; after: string; additions: number; deletions: number }>;
 }
+
+/** 文件修改类工具：arguments 里通常带 path/filePath/file 字段。 */
+const FILE_TOOL_NAMES = new Set([
+  "write",
+  "edit",
+  "rename",
+  "move",
+  "delete",
+  "remove",
+  "copy",
+  "fs_write",
+  "fs_edit",
+  "fs_rename",
+  "fs_move",
+  "fs_delete",
+  "fs_remove",
+  "fs_copy",
+  "str-replace-editor",
+]);
 
 interface PendingAssistant {
   messageId: string;
@@ -189,7 +212,16 @@ export interface OcServerOptions {
   /** 列出某 provider 可用的全部模型（模型选择窗口的数据源） */
   listModels?: (provider: string) => Promise<Array<{ id: string; name: string; description?: string; contextWindow?: number }>>;
   /** 查询 DSH 会话投影（启动时重建历史） */
-  listDshSessions?: () => Promise<Array<{ sessionId: string; title: string; preset?: string; views: import("./projection.js").MessageView[] }>>;
+  listDshSessions?: () => Promise<
+    Array<{
+      sessionId: string;
+      title: string;
+      preset?: string;
+      views: import("./projection.js").MessageView[];
+      todos: Array<{ id: string; content: string; status: string; priority: string }>;
+      diffs: Array<{ file: string; before: string; after: string; additions: number; deletions: number }>;
+    }>
+  >;
 }
 
 // ── 日志：写文件（终端保持干净；请求级日志需 DSH_OC_DEBUG=1）─────────────
@@ -248,7 +280,7 @@ export class OcServer {
     const list = (await this.opts.listDshSessions?.()) ?? [];
     for (const item of list) {
       try {
-        this.hydrateSession(item.sessionId, item.title, item.preset, item.views);
+        this.hydrateSession(item.sessionId, item.title, item.preset, item.views, item.todos ?? [], item.diffs ?? []);
       } catch (error) {
         ocLog(`[oc-server] hydrate ${item.sessionId} failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -372,6 +404,8 @@ export class OcServer {
         sse: new Set(),
         permissions: new Map(),
         questions: new Map(),
+        todos: [],
+        diffs: [],
       };
       this.sessions.set(id, state);
     }
@@ -379,13 +413,22 @@ export class OcServer {
   }
 
   /** 把 DSH 会话视图重建为 opencode 会话状态（进程内；ocSessionId 由 dshSessionId 稳定哈希）。 */
-  private hydrateSession(dshSessionId: string, title: string, preset: string | undefined, views: import("./projection.js").MessageView[]): void {
+  private hydrateSession(
+    dshSessionId: string,
+    title: string,
+    preset: string | undefined,
+    views: import("./projection.js").MessageView[],
+    todos: Array<{ id: string; content: string; status: string; priority: string }>,
+    diffs: Array<{ file: string; before: string; after: string; additions: number; deletions: number }>,
+  ): void {
     const ocSessionId = ocIdFromDsh(dshSessionId);
     const existing = this.sessions.get(ocSessionId);
     const state = existing ?? this.getOrCreateSession(ocSessionId, this.opts.directory);
     state.dshSessionId = dshSessionId;
     if (title) state.title = title;
     if (preset) state.currentAgent = agentOfPreset(preset);
+    if (todos.length > 0) state.todos = todos;
+    if (diffs.length > 0) state.diffs = diffs;
     if (existing) return;
     state.messages = viewsToLegacyMessages(ocSessionId, views, this.selection(), state.currentAgent);
     for (const m of state.messages) {
@@ -561,11 +604,29 @@ export class OcServer {
         break;
       }
       case "tool/call": {
+        const data = event.data as { callId?: string; name?: string; arguments?: string };
+        const name = data.name ?? "tool";
+        // 文件修改类工具 → 会话 Modified Files（侧边栏 Files 区；不依赖 pending）
+        if (FILE_TOOL_NAMES.has(name)) {
+          try {
+            const args = data.arguments ? JSON.parse(data.arguments) : {};
+            const file = (args.path ?? args.file_path ?? args.filePath ?? args.file ?? args.paths?.[0]) as string | undefined;
+            if (typeof file === "string" && file.trim()) {
+              if (!state.diffs.some((d) => d.file === file)) {
+                state.diffs.push({ file, before: "", after: "", additions: 1, deletions: 0 });
+                this.pushSessionEvent(state, {
+                  type: "session.diff",
+                  properties: { sessionID: state.id, diff: state.diffs },
+                });
+              }
+            }
+          } catch {
+            /* arguments 解析失败不阻塞 */
+          }
+        }
         const pending = state.pending;
         if (!pending) break;
-        const data = event.data as { callId?: string; name?: string; arguments?: string };
         const callID = data.callId ?? ocId("call");
-        const name = data.name ?? "tool";
         let tool = pending.tools.get(callID);
         if (!tool) {
           tool = {
@@ -609,6 +670,24 @@ export class OcServer {
           this.pushSessionEvent(state, {
             type: "message.part.updated",
             properties: { part: this.toolPart(state, pending, tool) },
+          });
+        }
+        break;
+      }
+      case "todo/write": {
+        // DSH todo 快照 → opencode Todo（侧边栏 Todo 区）
+        const data = event.data as { todos?: Array<{ content?: string; status?: string }> } | Array<{ content?: string; status?: string }>;
+        const list = Array.isArray(data) ? data : data.todos;
+        if (Array.isArray(list)) {
+          state.todos = list.map((item) => ({
+            id: `td_${Math.random().toString(36).slice(2, 10)}`,
+            content: item.content ?? "",
+            status: item.status ?? "pending",
+            priority: "medium",
+          }));
+          this.pushSessionEvent(state, {
+            type: "todo.updated",
+            properties: { sessionID: state.id, todos: state.todos },
           });
         }
         break;
@@ -1027,14 +1106,14 @@ export class OcServer {
       if (method === "GET" && sub === "todo") {
         const state = this.sessions.get(sessionId);
         if (this.sessionOr404(state, res)) {
-          this.sendJson(res, 200, located({ data: [] }, this.opts.directory));
+          this.sendJson(res, 200, located({ data: state.todos }, this.opts.directory));
         }
         return true;
       }
       if (method === "GET" && sub === "diff") {
         const state = this.sessions.get(sessionId);
         if (this.sessionOr404(state, res)) {
-          this.sendJson(res, 200, located({ data: [] }, this.opts.directory));
+          this.sendJson(res, 200, located({ data: state.diffs }, this.opts.directory));
         }
         return true;
       }
@@ -1227,11 +1306,13 @@ export class OcServer {
         return true;
       }
       if (method === "GET" && sub === "todo") {
-        this.sendJson(res, 200, []);
+        const st = this.sessions.get(sessionId);
+        this.sendJson(res, 200, st ? st.todos : []);
         return true;
       }
       if (method === "GET" && sub === "diff") {
-        this.sendJson(res, 200, { files: [] });
+        const st = this.sessions.get(sessionId);
+        this.sendJson(res, 200, st ? st.diffs : []);
         return true;
       }
       if (method === "POST" && sub === "abort") {

@@ -103,3 +103,18 @@ export declare function toolAction(name: string): string;
 export declare function toolParamSummary(name: string, argsJson: string, maxWidth: number): string;
 /** 从结果文本里提取语法高亮语言标签（opencode 风格代码块）。 */
 export declare function extOfPath(path: string): string;
+/** 从会话事件流提取最后一条 todo 快照（opencode Todo 形状）。 */
+export declare function todosFromEvents(events: readonly SessionEvent[]): Array<{
+    id: string;
+    content: string;
+    status: string;
+    priority: string;
+}>;
+/** 从会话事件流提取修改过的文件（工具调用 → Modified Files 区）。 */
+export declare function diffsFromEvents(events: readonly SessionEvent[]): Array<{
+    file: string;
+    before: string;
+    after: string;
+    additions: number;
+    deletions: number;
+}>;

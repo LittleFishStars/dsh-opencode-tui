@@ -30,6 +30,19 @@ export interface OcServerOptions {
         title: string;
         preset?: string;
         views: import("./projection.js").MessageView[];
+        todos: Array<{
+            id: string;
+            content: string;
+            status: string;
+            priority: string;
+        }>;
+        diffs: Array<{
+            file: string;
+            before: string;
+            after: string;
+            additions: number;
+            deletions: number;
+        }>;
     }>>;
 }
 export declare class OcServer {

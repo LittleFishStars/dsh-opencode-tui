@@ -521,3 +521,63 @@ export function extOfPath(path: string): string {
   if (!ext || ext === path) return "";
   return ext.toLowerCase();
 }
+
+/** 文件修改类工具（与 oc-server 的 FILE_TOOL_NAMES 一致）。 */
+const FILE_TOOL_NAMES = new Set([
+  "write",
+  "edit",
+  "rename",
+  "move",
+  "delete",
+  "remove",
+  "copy",
+  "fs_write",
+  "fs_edit",
+  "fs_rename",
+  "fs_move",
+  "fs_delete",
+  "fs_remove",
+  "fs_copy",
+  "str-replace-editor",
+]);
+
+/** 从会话事件流提取最后一条 todo 快照（opencode Todo 形状）。 */
+export function todosFromEvents(events: readonly SessionEvent[]): Array<{ id: string; content: string; status: string; priority: string }> {
+  let last: Array<{ content?: string; status?: string }> | undefined;
+  for (const event of events) {
+    if ((event as { type?: string }).type !== "todo/write") continue;
+    const data = (event as unknown as { data?: unknown }).data;
+    const list = Array.isArray(data) ? data : ((data as { todos?: unknown } | undefined)?.todos as Array<{ content?: string; status?: string }> | undefined);
+    if (Array.isArray(list)) last = list;
+  }
+  if (!last) return [];
+  return last.map((item) => ({
+    id: `td_${Math.random().toString(36).slice(2, 10)}`,
+    content: item.content ?? "",
+    status: item.status ?? "pending",
+    priority: "medium",
+  }));
+}
+
+/** 从会话事件流提取修改过的文件（工具调用 → Modified Files 区）。 */
+export function diffsFromEvents(events: readonly SessionEvent[]): Array<{ file: string; before: string; after: string; additions: number; deletions: number }> {
+  const out: Array<{ file: string; before: string; after: string; additions: number; deletions: number }> = [];
+  const seen = new Set<string>();
+  for (const event of events) {
+    if ((event as { type?: string }).type !== "tool/call") continue;
+    const data = (event as unknown as { data?: { name?: string; arguments?: string } }).data;
+    if (!data || !FILE_TOOL_NAMES.has(data.name ?? "")) continue;
+    let args: Record<string, unknown> = {};
+    try {
+      args = data.arguments ? JSON.parse(data.arguments) : {};
+    } catch {
+      continue;
+    }
+    const file = (args.path ?? args.file_path ?? args.filePath ?? args.file) as string | undefined;
+    if (typeof file === "string" && file.trim() && !seen.has(file)) {
+      seen.add(file);
+      out.push({ file, before: "", after: "", additions: 1, deletions: 0 });
+    }
+  }
+  return out;
+}

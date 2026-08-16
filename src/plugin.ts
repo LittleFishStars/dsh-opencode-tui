@@ -25,7 +25,7 @@ import "@deepseek-ai/dsh-session-query";
 import "@deepseek-ai/dsh-session-persistence";
 import { AgentManager } from "./agent.js";
 import { OcServer } from "./oc-server.js";
-import { foldSessionMeta, projectEvents, type MessageView } from "./projection.js";
+import { diffsFromEvents, foldSessionMeta, projectEvents, todosFromEvents, type MessageView } from "./projection.js";
 
 const name = "dsh-opencode-tui";
 
@@ -104,8 +104,24 @@ function apply(ctx: Context, config: PluginConfig) {
       /* 忽略 */
     }
   };
-  const listDshSessions = async (): Promise<Array<{ sessionId: string; title: string; preset?: string; views: MessageView[] }>> => {
-    const out: Array<{ sessionId: string; title: string; preset?: string; views: MessageView[] }> = [];
+  const listDshSessions = async (): Promise<
+    Array<{
+      sessionId: string;
+      title: string;
+      preset?: string;
+      views: MessageView[];
+      todos: Array<{ id: string; content: string; status: string; priority: string }>;
+      diffs: Array<{ file: string; before: string; after: string; additions: number; deletions: number }>;
+    }>
+  > => {
+    const out: Array<{
+      sessionId: string;
+      title: string;
+      preset?: string;
+      views: MessageView[];
+      todos: Array<{ id: string; content: string; status: string; priority: string }>;
+      diffs: Array<{ file: string; before: string; after: string; additions: number; deletions: number }>;
+    }> = [];
     let skipped = 0;
     try {
       const records = await ctx.sessionQuery.listSessions();
@@ -123,6 +139,8 @@ function apply(ctx: Context, config: PluginConfig) {
             title: folded.title,
             preset: folded.preset,
             views: projectEvents(inspection.events),
+            todos: todosFromEvents(inspection.events),
+            diffs: diffsFromEvents(inspection.events),
           });
         } catch (error) {
           dbgLog(`inspect ${header.id} failed: ${error instanceof Error ? error.message : String(error)}`);
