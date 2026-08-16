@@ -6,6 +6,8 @@ export interface AgentManagerOptions {
     cwd: string;
     /** 恢复的会话 id（resume 模式） */
     resumeSessionId?: string;
+    /** agent preset id（默认取 roster 的 default；undefined = roster 默认） */
+    preset?: string;
 }
 export interface OwnedAgent {
     agent: Agent;
@@ -21,7 +23,14 @@ export declare class AgentManager {
     private ctx;
     private opts;
     private owned;
+    /** 已解析的 preset 装配函数（agentCtx → 挂载工具/提示词），无 roster 时为 undefined */
+    private presetSetup;
+    private presetResolved;
     constructor(ctx: Context, opts: AgentManagerOptions);
+    /** 解析一次 preset（roster 缺失/解析失败 → 无装配，会话照常启动）。 */
+    private resolvePresetSetup;
+    /** 组装 agent setup：模型选择 + preset 工具装配。 */
+    private buildSetup;
     get current(): OwnedAgent | null;
     get agent(): Agent | undefined;
     /** 创建（或恢复）agent，返回是否新建。 */

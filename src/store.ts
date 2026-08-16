@@ -54,6 +54,10 @@ export interface Snapshot {
   /** 事件驱动型转场（如会话切换中） */
   loadingSession: boolean;
   cwd: string;
+  /** 折叠块展开状态：`thinking:<key>` / `tool:<key>` → true=展开 */
+  expanded: Record<string, boolean>;
+  /** 当前打开对话框的屏幕矩形（鼠标命中用） */
+  dialogRect: { left: number; top: number; width: number; height: number } | null;
 }
 
 const initialSnapshot: Snapshot = {
@@ -80,6 +84,8 @@ const initialSnapshot: Snapshot = {
   notification: null,
   loadingSession: false,
   cwd: process.cwd(),
+  expanded: {},
+  dialogRect: null,
 };
 
 export class TuiStore {
@@ -224,6 +230,35 @@ export class TuiStore {
 
   setSidebar(show: boolean): void {
     this.set({ showSidebar: show });
+  }
+
+  // ── 折叠展开 ────────────────────────────────────────────────────────────
+
+  /** 切换某个折叠块（thinking:<key> / tool:<key>）。 */
+  toggleExpanded(id: string): void {
+    this.set((prev) => ({
+      expanded: { ...prev.expanded, [id]: !prev.expanded[id] },
+    }));
+  }
+
+  isExpanded(id: string): boolean {
+    return this.snapshot.expanded[id] === true;
+  }
+
+  /** 对话框组件渲染时报告自己的屏幕矩形（供鼠标命中换算）。 */
+  setDialogRect(rect: { left: number; top: number; width: number; height: number } | null): void {
+    if (
+      (rect === null && this.snapshot.dialogRect === null) ||
+      (rect !== null &&
+        this.snapshot.dialogRect !== null &&
+        this.snapshot.dialogRect.left === rect.left &&
+        this.snapshot.dialogRect.top === rect.top &&
+        this.snapshot.dialogRect.width === rect.width &&
+        this.snapshot.dialogRect.height === rect.height)
+    ) {
+      return;
+    }
+    this.set({ dialogRect: rect });
   }
 }
 

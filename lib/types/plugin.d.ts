@@ -13,6 +13,8 @@ declare const Config: Schema<Schemastery.ObjectS<{
     model: Schema<string, string>;
     /** 推理强度档位 */
     effort: Schema<string, string>;
+    /** agent preset id（默认 roster 的 default：standard） */
+    preset: Schema<string, string>;
     /** 启动即恢复的会话 id */
     sessionId: Schema<string, string>;
     /** 全屏（alt screen）模式 */
@@ -27,6 +29,8 @@ declare const Config: Schema<Schemastery.ObjectS<{
     model: Schema<string, string>;
     /** 推理强度档位 */
     effort: Schema<string, string>;
+    /** agent preset id（默认 roster 的 default：standard） */
+    preset: Schema<string, string>;
     /** 启动即恢复的会话 id */
     sessionId: Schema<string, string>;
     /** 全屏（alt screen）模式 */
@@ -41,6 +45,7 @@ interface PluginConfig {
     provider?: string;
     model?: string;
     effort?: string;
+    preset?: string;
     sessionId?: string;
     fullscreen: boolean;
     cwd?: string;

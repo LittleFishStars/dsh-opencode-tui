@@ -7,7 +7,7 @@ import { Box, Text } from "ink";
 import { execFile } from "node:child_process";
 import type { Theme } from "../theme.js";
 import type { SessionMeta } from "../projection.js";
-import { truncate } from "../util.js";
+import { truncate, widthOf } from "../util.js";
 
 interface ModFile {
   path: string;
@@ -113,69 +113,79 @@ export function Sidebar({ theme, width, height, session, model, cwd }: SidebarPr
     };
   }, [sessionId, cwd]);
 
-  const row = (label: string, value: string): React.ReactElement => (
-    <Box flexDirection="row">
-      <Text color={theme.primary} bold={true}>
-        {label}
-      </Text>
-      <Box flexShrink={1}>
-        <Text color={theme.text}>: {truncate(value, Math.max(5, width - label.length - 3))}</Text>
-      </Box>
-    </Box>
+  const bg = theme.sidebarBg;
+  const textWidth = Math.max(10, width - 2);
+  /** 满宽灰底行：内容 + 空格填充到整行（嵌套 Text 继承父背景）。 */
+  const line = (children: React.ReactNode, pad = 0, color?: string): React.ReactElement => (
+    <Text backgroundColor={bg} color={color}>
+      {children}
+      {" ".repeat(Math.max(0, textWidth - pad))}
+    </Text>
   );
+  const rowLine = (label: string, value: string): React.ReactElement => {
+    const v = truncate(value, Math.max(5, textWidth - label.length - 3));
+    return line(
+      <>
+        <Text color={theme.primary} bold={true}>
+          {label}
+        </Text>
+        <Text color={theme.text}>: {v}</Text>
+      </>,
+      widthOf(label) + 2 + widthOf(v),
+    );
+  };
+  const fileLine = (f: ModFile): React.ReactElement => {
+    const stats = `${f.additions > 0 ? ` +${f.additions}` : ""}${f.removals > 0 ? ` -${f.removals}` : ""}`;
+    const path = truncate(f.path, Math.max(5, textWidth - widthOf(stats) - 2));
+    return line(
+      <>
+        <Text color={theme.text}>{path}</Text>
+        {f.additions > 0 ? <Text color={theme.success}>{` +${f.additions}`}</Text> : null}
+        {f.removals > 0 ? <Text color={theme.error}>{` -${f.removals}`}</Text> : null}
+      </>,
+      widthOf(path) + widthOf(stats),
+    );
+  };
 
-  const inner = (
-    <Box flexDirection="column" width={width} paddingLeft={1} paddingRight={1}>
+  const rows: React.ReactElement[] = [];
+  rows.push(
+    line(
       <Text color={theme.primary} bold={true}>
-        dsh ⌬ opencode
-      </Text>
-      <Box height={1} />
-      {session ? (
-        <>
-          {row("Session", session.title || "New Session")}
-          {row("Model", model ? `${model.provider}/${model.model}` : "-")}
-          {row("CWD", cwd)}
-          {row("Messages", String(session.messageCount))}
-        </>
-      ) : (
-        <Text color={theme.textMuted}>No active session</Text>
-      )}
-      <Box height={1} />
-      <Text color={theme.primary} bold={true}>
-        Modified Files:
-      </Text>
-      {modFiles.length === 0 ? (
-        <Text color={theme.textMuted}>No modified files</Text>
-      ) : (
-        <Box flexDirection="column">
-          {modFiles.map((f, i) => (
-            <Box key={i} flexDirection="row">
-              <Text color={theme.text}>{truncate(f.path, Math.max(5, width - 12))}</Text>
-              {f.additions > 0 ? (
-                <Text color={theme.success}>
-                  {" "}+{f.additions}
-                </Text>
-              ) : null}
-              {f.removals > 0 ? (
-                <Text color={theme.error}>
-                  {" "}-{f.removals}
-                </Text>
-              ) : null}
-            </Box>
-          ))}
-        </Box>
-      )}
-      <Box height={1} />
-      <Text color={theme.textMuted} dimColor={true}>
-        ctrl+s sessions · ctrl+k commands
-      </Text>
-    </Box>
+        {" "}dsh ⌬ opencode
+      </Text>,
+      widthOf(" dsh ⌬ opencode"),
+    ),
   );
+  rows.push(line(" "));
+  if (session) {
+    rows.push(rowLine("Session", session.title || "New Session"));
+    rows.push(rowLine("Model", model ? `${model.provider}/${model.model}` : "-"));
+    rows.push(rowLine("CWD", cwd));
+    rows.push(rowLine("Messages", String(session.messageCount)));
+  } else {
+    rows.push(line(<Text color={theme.textMuted}> No active session</Text>, widthOf(" No active session")));
+  }
+  rows.push(line(" "));
+  rows.push(
+    line(
+      <Text color={theme.primary} bold={true}>
+        {" "}Modified Files:
+      </Text>,
+      widthOf(" Modified Files:"),
+    ),
+  );
+  if (modFiles.length === 0) {
+    rows.push(line(<Text color={theme.textMuted}> No modified files</Text>, widthOf(" No modified files")));
+  } else {
+    for (const f of modFiles) rows.push(fileLine(f));
+  }
+  rows.push(line(" "));
+  rows.push(line(<Text color={theme.textMuted} dimColor={true}> ctrl+s sessions · ctrl+k commands</Text>));
 
   // 超高时截断（sidebar 不滚动）
   return (
     <Box flexDirection="column" height={height} overflow="hidden">
-      {inner}
+      {rows}
     </Box>
   );
 }

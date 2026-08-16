@@ -12,6 +12,7 @@ import type { Theme } from "../theme.js";
 import { formatDuration, truncate } from "../util.js";
 import { AnsiInline } from "../ansi.js";
 import { Markdown } from "../markdown.js";
+import { SPINNER_FRAMES } from "../util.js";
 
 export const MAX_RESULT_HEIGHT = 10;
 
@@ -136,9 +137,30 @@ function UserBody({ view, theme, width }: { view: Extract<MessageView, { kind: "
   );
 }
 
-function AssistantBody({ view, theme, width }: { view: Extract<MessageView, { kind: "assistant" }>; theme: Theme; width: number }): React.ReactElement {
+export interface BodyExpanded {
+  thinking: boolean;
+  tool: boolean;
+}
+
+/** 思考内容字符数（人类可读）。 */
+function charsLabel(n: number): string {
+  if (n < 1000) return `${n} chars`;
+  return `${(n / 1000).toFixed(1)}k chars`;
+}
+
+function AssistantBody({
+  view,
+  theme,
+  width,
+  expanded,
+}: {
+  view: Extract<MessageView, { kind: "assistant" }>;
+  theme: Theme;
+  width: number;
+  expanded: BodyExpanded;
+}): React.ReactElement {
   const text = view.text;
-  const showThinking = view.thinking !== "" && !view.assembled;
+  const hasThinking = view.thinking !== "";
   const infoParts: string[] = [];
   if (view.finished) {
     const model = view.model ? view.model.split("/").pop() : undefined;
@@ -157,10 +179,17 @@ function AssistantBody({ view, theme, width }: { view: Extract<MessageView, { ki
   }
   return (
     <Box flexDirection="column" width={width}>
-      {showThinking ? (
-        <Text color={theme.textMuted} italic={true}>
-          {truncate(view.thinking.replace(/\s+/g, " "), Math.max(20, width - 4))}
-        </Text>
+      {hasThinking ? (
+        <Box flexDirection="column">
+          <Text color={theme.textMuted} italic={true}>
+            {expanded.thinking ? "▾ " : "▸ "}thinking ({charsLabel(view.thinking.length)})
+          </Text>
+          {expanded.thinking ? (
+            <Text color={theme.textMuted} wrap="wrap">
+              {view.thinking}
+            </Text>
+          ) : null}
+        </Box>
       ) : null}
       {text !== "" ? (
         view.assembled ? (
@@ -182,26 +211,53 @@ function AssistantBody({ view, theme, width }: { view: Extract<MessageView, { ki
   );
 }
 
-function ToolBody({ view, theme, width }: { view: Extract<MessageView, { kind: "tool" }>; theme: Theme; width: number }): React.ReactElement {
+function ToolBody({
+  view,
+  theme,
+  width,
+  expanded,
+  spinFrame,
+}: {
+  view: Extract<MessageView, { kind: "tool" }>;
+  theme: Theme;
+  width: number;
+  expanded: BodyExpanded;
+  /** 转圈帧（仅运行中的折叠卡片需要，其他传 undefined 以保持 memo 命中） */
+  spinFrame?: number;
+}): React.ReactElement {
   const tool = view.tool;
   const nameText = toolDisplayName(tool.name);
-  const paramsWidth = Math.max(10, width - nameText.length - 4);
+  const paramsWidth = Math.max(10, width - nameText.length - 6);
   const params = toolParamSummary(tool.name, tool.arguments, paramsWidth);
+  const statusMark =
+    tool.status === "running" ? (
+      <Text color={theme.primary}>{SPINNER_FRAMES[(spinFrame ?? 0) % SPINNER_FRAMES.length]}</Text>
+    ) : tool.status === "error" ? (
+      <Text color={theme.error}>✖</Text>
+    ) : (
+      <Text color={theme.success}>✓</Text>
+    );
+  const head = (
+    <Box flexDirection="row">
+      <Text color={theme.textMuted}>{expanded.tool ? "▾ " : "▸ "}</Text>
+      <Text color={theme.textMuted}>{nameText}: </Text>
+      {tool.status === "running" ? (
+        <Text color={theme.textMuted} wrap="wrap">
+          {toolAction(tool.name)}
+        </Text>
+      ) : (
+        <Text color={theme.textMuted} wrap="wrap">
+          {params || " "}
+        </Text>
+      )}
+      <Text> </Text>
+      {statusMark}
+    </Box>
+  );
   return (
     <Box flexDirection="column" width={width}>
-      <Box flexDirection="row">
-        <Text color={theme.textMuted}>{nameText}: </Text>
-        {tool.status === "running" ? (
-          <Text color={theme.textMuted} wrap="wrap">
-            {toolAction(tool.name)}
-          </Text>
-        ) : (
-          <Text color={theme.textMuted} wrap="wrap">
-            {params || " "}
-          </Text>
-        )}
-      </Box>
-      {tool.status !== "running" ? (
+      {head}
+      {expanded.tool && tool.status !== "running" ? (
         <Box marginTop={0}>{renderToolResult(tool, theme, width)}</Box>
       ) : null}
     </Box>
@@ -213,10 +269,14 @@ export const MessageBlock = React.memo(function MessageBlock({
   view,
   theme,
   width,
+  expanded,
+  spinFrame,
 }: {
   view: MessageView;
   theme: Theme;
   width: number;
+  expanded: BodyExpanded;
+  spinFrame?: number;
 }): React.ReactElement {
   const borderColor =
     view.kind === "user" ? theme.secondary : view.kind === "assistant" ? theme.primary : theme.border;
@@ -236,9 +296,9 @@ export const MessageBlock = React.memo(function MessageBlock({
       {view.kind === "user" ? (
         <UserBody view={view} theme={theme} width={width} />
       ) : view.kind === "assistant" ? (
-        <AssistantBody view={view} theme={theme} width={width} />
+        <AssistantBody view={view} theme={theme} width={width} expanded={expanded} />
       ) : (
-        <ToolBody view={view} theme={theme} width={width} />
+        <ToolBody view={view} theme={theme} width={width} expanded={expanded} spinFrame={spinFrame} />
       )}
     </Box>
   );
@@ -248,21 +308,24 @@ export const MessageBlock = React.memo(function MessageBlock({
 
 import { estimateLines } from "../util.js";
 
-/** 估算一条消息渲染后的行数（含 1 行安全余量）。 */
-export function estimateMessageHeight(view: MessageView, width: number): number {
+/** 估算一条消息渲染后的行数（含 1 行安全余量；折叠感知）。 */
+export function estimateMessageHeight(view: MessageView, width: number, expanded: BodyExpanded): number {
   const textWidth = Math.max(10, width);
   let lines = 0;
   if (view.kind === "user") {
     lines = estimateLines(view.content, textWidth);
   } else if (view.kind === "assistant") {
-    if (view.thinking !== "" && !view.assembled) lines += 1;
+    if (view.thinking !== "") {
+      lines += 1; // 折叠头
+      if (expanded.thinking) lines += estimateLines(view.thinking, textWidth);
+    }
     if (view.text !== "") lines += estimateLines(view.text, textWidth);
     else lines += 1;
     if (view.finished) lines += 1;
   } else {
     lines += 1; // 头部行
     const tool = view.tool;
-    if (tool.status !== "running") {
+    if (expanded.tool && tool.status !== "running") {
       const result = tool.result ?? "";
       if (tool.status === "error") {
         lines += 1;
@@ -274,4 +337,16 @@ export function estimateMessageHeight(view: MessageView, width: number): number 
     }
   }
   return lines + 1; // 安全余量
+}
+
+/** 折叠块稳定 id。 */
+export function expandedId(kind: "thinking" | "tool", key: string): string {
+  return `${kind}:${key}`;
+}
+
+/** 消息是否含可折叠块（供鼠标命中判断）。 */
+export function collapsibleKind(view: MessageView): "thinking" | "tool" | null {
+  if (view.kind === "assistant" && view.thinking !== "") return "thinking";
+  if (view.kind === "tool") return "tool";
+  return null;
 }

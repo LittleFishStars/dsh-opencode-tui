@@ -6,7 +6,12 @@ export interface Theme {
   name: string;
   /** 是否暗色主题 */
   dark: boolean;
+  /** 主区背景（近黑，GUI 感的主画布） */
   background: string;
+  /** 侧栏灰色背景 */
+  sidebarBg: string;
+  /** 对话框背景（区别于主区/侧栏） */
+  dialogBg: string;
   backgroundSecondary: string;
   backgroundDarker: string;
   text: string;
@@ -47,7 +52,9 @@ export interface Theme {
 export const opencodeTheme: Theme = {
   name: "opencode",
   dark: true,
-  background: "#212121",
+  background: "#0d0d0d",
+  sidebarBg: "#2a2a2a",
+  dialogBg: "#1c1c1c",
   backgroundSecondary: "#252525",
   backgroundDarker: "#121212",
   text: "#e0e0e0",
@@ -89,6 +96,8 @@ export const opencodeLightTheme: Theme = {
   name: "opencode-light",
   dark: false,
   background: "#f8f8f8",
+  sidebarBg: "#ececec",
+  dialogBg: "#f2f2f2",
   backgroundSecondary: "#f0f0f0",
   backgroundDarker: "#ffffff",
   text: "#2a2a2a",
@@ -127,7 +136,9 @@ export const opencodeLightTheme: Theme = {
 export const draculaTheme: Theme = {
   ...opencodeTheme,
   name: "dracula",
-  background: "#282a36",
+  background: "#1e1f29",
+  sidebarBg: "#282a36",
+  dialogBg: "#21222c",
   backgroundSecondary: "#2f3242",
   backgroundDarker: "#21222c",
   text: "#f8f8f2",

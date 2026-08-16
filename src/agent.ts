@@ -8,6 +8,7 @@ import { createUserMessage } from "@deepseek-ai/dsh-llm";
 import { SessionId } from "@deepseek-ai/dsh-session";
 import type { Context } from "@deepseek-ai/cordis";
 import type { Agent, AgentHandle, ModelSelection } from "@deepseek-ai/dsh-agent";
+import type { AgentPresets } from "@deepseek-ai/dsh-agent-presets";
 
 export interface AgentManagerOptions {
   /** 模型选择（来自 agentDefaultModel.currentSelection()） */
@@ -15,6 +16,8 @@ export interface AgentManagerOptions {
   cwd: string;
   /** 恢复的会话 id（resume 模式） */
   resumeSessionId?: string;
+  /** agent preset id（默认取 roster 的 default；undefined = roster 默认） */
+  preset?: string;
 }
 
 export interface OwnedAgent {
@@ -32,10 +35,41 @@ export class AgentManager {
   private ctx: Context;
   private opts: AgentManagerOptions;
   private owned: OwnedAgent | null = null;
+  /** 已解析的 preset 装配函数（agentCtx → 挂载工具/提示词），无 roster 时为 undefined */
+  private presetSetup: ((agentCtx: Context) => Promise<void>) | undefined;
+  private presetResolved = false;
 
   constructor(ctx: Context, opts: AgentManagerOptions) {
     this.ctx = ctx;
     this.opts = opts;
+  }
+
+  /** 解析一次 preset（roster 缺失/解析失败 → 无装配，会话照常启动）。 */
+  private async resolvePresetSetup(): Promise<((agentCtx: Context) => Promise<void>) | undefined> {
+    if (this.presetResolved) return this.presetSetup;
+    this.presetResolved = true;
+    const presets = this.ctx.get("agentPresets") as AgentPresets | undefined;
+    if (!presets) return undefined;
+    try {
+      const resolved = await presets.resolve(this.opts.preset);
+      this.presetSetup = async (agentCtx: Context) => {
+        await presets.mount(agentCtx, resolved.id);
+      };
+    } catch (error) {
+      this.ctx.logger?.warn?.(
+        `dsh-opencode-tui: agent preset ${this.opts.preset ?? "(default)"} unavailable (${error instanceof Error ? error.message : String(error)}) — composing without a preset`,
+      );
+    }
+    return this.presetSetup;
+  }
+
+  /** 组装 agent setup：模型选择 + preset 工具装配。 */
+  private buildSetup(selection: ModelSelection): (agentCtx: Context) => Promise<void> {
+    return async (agentCtx: Context) => {
+      installModelSelection(agentCtx, { current: selection, assembled: void 0 });
+      const preset = await this.resolvePresetSetup();
+      if (preset) await preset(agentCtx);
+    };
   }
 
   get current(): OwnedAgent | null {
@@ -54,9 +88,7 @@ export class AgentManager {
     if (this.opts.resumeSessionId) {
       const { agent } = await agents.resume({
         resumeSessionId: SessionId(this.opts.resumeSessionId),
-        setup: (agentCtx) => {
-          installModelSelection(agentCtx, { current: selection, assembled: void 0 });
-        },
+        setup: this.buildSetup(selection),
       });
       this.owned = {
         agent,
@@ -71,9 +103,7 @@ export class AgentManager {
           provider: selection.provider,
           model: selection.model,
         },
-        setup: (agentCtx) => {
-          installModelSelection(agentCtx, { current: selection, assembled: void 0 });
-        },
+        setup: this.buildSetup(selection),
       });
       this.owned = {
         agent,

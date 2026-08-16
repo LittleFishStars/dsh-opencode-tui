@@ -38,3 +38,5 @@ export declare function formatDuration(startMs: number, endMs: number): string;
 export declare function formatRelativeTime(ts: number): string;
 /** 会话标题兜底。 */
 export declare function fallbackTitle(text: string, maxWords?: number, maxBytes?: number): string;
+/** 转圈帧序列。 */
+export declare const SPINNER_FRAMES: string[];

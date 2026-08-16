@@ -7,7 +7,7 @@ import { Box, Text, useInput, useStdout } from "ink";
 import { useSyncExternalStore } from "react";
 import { getStore, getApprovalQueue, getQuestionQueue, type TuiStore, type DialogName } from "../store.js";
 import { THEMES, THEME_NAMES, type Theme } from "../theme.js";
-import { Messages, SPINNER_FRAMES } from "./Messages.js";
+import { Messages } from "./Messages.js";
 import { Editor } from "./Editor.js";
 import { Sidebar } from "./Sidebar.js";
 import { StatusBar } from "./StatusBar.js";
@@ -35,6 +35,7 @@ export interface TuiAppProps {
   actions: TuiActions;
   brand: string;
   commands: DialogItem[];
+  mouse: MouseController;
 }
 
 /** 侧边栏宽度：opencode 右栏约 1/4 屏宽，封顶 36。 */
@@ -42,7 +43,7 @@ function sidebarWidth(totalWidth: number): number {
   return Math.min(36, Math.max(26, Math.floor(totalWidth * 0.28)));
 }
 
-export function TuiApp({ actions, brand, commands }: TuiAppProps): React.ReactElement {
+export function TuiApp({ actions, brand, commands, mouse }: TuiAppProps): React.ReactElement {
   const store = getStore();
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot);
   const { stdout } = useStdout();
@@ -160,6 +161,27 @@ export function TuiApp({ actions, brand, commands }: TuiAppProps): React.ReactEl
   const editorRef = useRef<((text: string) => void) | null>(null);
   const editorEmptyRef = useRef(true);
 
+  // ── 鼠标分发：后注册者优先（对话框盖在消息区之上） ─────────────────────
+  const mouseHandlersRef = useRef<Array<(e: MouseEventData) => boolean>>([]);
+  const registerMouse = useMemo(
+    () =>
+      (handler: (e: MouseEventData) => boolean): (() => void) => {
+        mouseHandlersRef.current.push(handler);
+        return () => {
+          mouseHandlersRef.current = mouseHandlersRef.current.filter((h) => h !== handler);
+        };
+      },
+    [],
+  );
+  useEffect(() => {
+    return mouse.on((e: MouseEventData) => {
+      const handlers = mouseHandlersRef.current;
+      for (let i = handlers.length - 1; i >= 0; i--) {
+        if (handlers[i]?.(e)) return;
+      }
+    });
+  }, [mouse]);
+
   // 会话切换：切走时退出跟随滚动（由 Messages 内部处理）
 
   const sbWidth = sidebarWidth(width);
@@ -167,9 +189,9 @@ export function TuiApp({ actions, brand, commands }: TuiAppProps): React.ReactEl
   const editorHeight = 3;
 
   return (
-    <Box flexDirection="column" width={width} height={height + 1}>
+    <Box flexDirection="column" width={width} height={height + 1} backgroundColor={theme.background}>
       <Box flexDirection="row" width={width} flexGrow={1}>
-        <Box flexDirection="column" width={mainWidth} flexGrow={1}>
+        <Box flexDirection="column" width={mainWidth} flexGrow={1} backgroundColor={theme.background}>
           <Messages
             messages={snapshot.messages}
             width={mainWidth}
@@ -178,11 +200,13 @@ export function TuiApp({ actions, brand, commands }: TuiAppProps): React.ReactEl
             busy={busy}
             task={snapshot.working.task}
             spinFrame={snapshot.working.spinFrame}
+            expanded={snapshot.expanded}
             showInitial={snapshot.currentSessionId === null && !snapshot.loadingSession}
             loading={snapshot.loadingSession}
             brand={brand}
+            onRegisterMouse={registerMouse}
           />
-          <Box borderTop={true} borderBottom={false} borderLeft={false} borderRight={false} borderColor={theme.border} flexDirection="column" height={editorHeight}>
+          <Box borderTop={true} borderBottom={false} borderLeft={false} borderRight={false} borderColor={theme.border} flexDirection="column" height={editorHeight} backgroundColor={theme.background}>
             <Editor
               theme={theme}
               width={mainWidth}
@@ -205,7 +229,7 @@ export function TuiApp({ actions, brand, commands }: TuiAppProps): React.ReactEl
           </Box>
         </Box>
         {snapshot.showSidebar ? (
-          <Box width={sbWidth} borderLeft={true} borderTop={false} borderBottom={false} borderRight={false} borderColor={theme.borderDim}>
+          <Box width={sbWidth} borderLeft={true} borderTop={false} borderBottom={false} borderRight={false} borderColor={theme.borderDim} backgroundColor={theme.sidebarBg}>
             <Sidebar
               theme={theme}
               width={sbWidth - 1}
@@ -254,6 +278,7 @@ export function TuiApp({ actions, brand, commands }: TuiAppProps): React.ReactEl
             actions.switchSession(item.id);
           }}
           onClose={() => store.closeDialog("sessions")}
+          onRegisterMouse={registerMouse}
         />
       ) : null}
       {snapshot.dialogs.commands ? (
@@ -269,6 +294,7 @@ export function TuiApp({ actions, brand, commands }: TuiAppProps): React.ReactEl
             actions.runCommand(item.id);
           }}
           onClose={() => store.closeDialog("commands")}
+          onRegisterMouse={registerMouse}
         />
       ) : null}
       {snapshot.dialogs.models ? (
@@ -281,6 +307,7 @@ export function TuiApp({ actions, brand, commands }: TuiAppProps): React.ReactEl
           emptyText="No model selection"
           onConfirm={() => store.closeDialog("models")}
           onClose={() => store.closeDialog("models")}
+          onRegisterMouse={registerMouse}
         />
       ) : null}
       {snapshot.dialogs.theme ? (
@@ -296,6 +323,7 @@ export function TuiApp({ actions, brand, commands }: TuiAppProps): React.ReactEl
             actions.setTheme(item.id);
           }}
           onClose={() => store.closeDialog("theme")}
+          onRegisterMouse={registerMouse}
         />
       ) : null}
       {snapshot.dialogs.filepicker && filePicker ? (
@@ -509,6 +537,7 @@ function FilePickerDialog({
 }
 
 import type { AskUserQuestionRequest } from "@deepseek-ai/dsh-user-questions";
+import type { MouseController, MouseEventData } from "../mouse.js";
 
 async function refreshFileList(
   dir: string,

@@ -48,6 +48,15 @@ export interface Snapshot {
     /** 事件驱动型转场（如会话切换中） */
     loadingSession: boolean;
     cwd: string;
+    /** 折叠块展开状态：`thinking:<key>` / `tool:<key>` → true=展开 */
+    expanded: Record<string, boolean>;
+    /** 当前打开对话框的屏幕矩形（鼠标命中用） */
+    dialogRect: {
+        left: number;
+        top: number;
+        width: number;
+        height: number;
+    } | null;
 }
 export declare class TuiStore {
     private snapshot;
@@ -77,6 +86,16 @@ export declare class TuiStore {
     notify(type: Notification["type"], message: string, ttlMs?: number): void;
     clearNotification(): void;
     setSidebar(show: boolean): void;
+    /** 切换某个折叠块（thinking:<key> / tool:<key>）。 */
+    toggleExpanded(id: string): void;
+    isExpanded(id: string): boolean;
+    /** 对话框组件渲染时报告自己的屏幕矩形（供鼠标命中换算）。 */
+    setDialogRect(rect: {
+        left: number;
+        top: number;
+        width: number;
+        height: number;
+    } | null): void;
 }
 /** 全局唯一 store 实例（由插件创建并注入）。 */
 export declare let store: TuiStore | undefined;

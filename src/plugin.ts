@@ -4,6 +4,7 @@
  * 组合要求：dsh-base 之上（agents/sessions/sessionPersistence/
  * agentDefaultModel/sessionQuery/userQuestions/approval 均来自 base 或 preset）。
  */
+import { appendFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeFileSync, readFileSync, unlinkSync } from "node:fs";
@@ -29,6 +30,7 @@ import {
   type SessionMeta,
 } from "./projection.js";
 import { loadThemeName, saveThemeName } from "./theme.js";
+import { MouseController, attachMouseStdin, MOUSE_ENABLE_SEQUENCE, MOUSE_DISABLE_SEQUENCE } from "./mouse.js";
 import { TuiApp, type TuiActions } from "./components/App.js";
 import type { DialogItem } from "./components/Dialog.js";
 
@@ -44,6 +46,8 @@ const Config = Schema.object({
   model: Schema.string().required(false),
   /** 推理强度档位 */
   effort: Schema.string().required(false),
+  /** agent preset id（默认 roster 的 default：standard） */
+  preset: Schema.string().required(false),
   /** 启动即恢复的会话 id */
   sessionId: Schema.string().required(false),
   /** 全屏（alt screen）模式 */
@@ -59,6 +63,7 @@ interface PluginConfig {
   provider?: string;
   model?: string;
   effort?: string;
+  preset?: string;
   sessionId?: string;
   fullscreen: boolean;
   cwd?: string;
@@ -104,6 +109,7 @@ function apply(ctx: Context, config: PluginConfig) {
     selection,
     cwd,
     resumeSessionId,
+    preset: config.preset ?? process.env.DSH_OPENCODE_TUI_PRESET,
   });
 
   // ── 会话元信息（侧边栏/会话列表） ──────────────────────────────────────
@@ -361,21 +367,42 @@ function apply(ctx: Context, config: PluginConfig) {
       saveThemeName(prefsDir, themeName);
     },
     quit: () => {
+      if (quitting) return;
+      quitting = true;
+      const dbg = (msg: string) => {
+        try {
+          appendFileSync(join(prefsDir, "quit-debug.log"), `${Date.now()} ${msg}\n`);
+        } catch {
+          /* 忽略 */
+        }
+      };
+      dbg("quit start");
       void (async () => {
         try {
           await manager.flush();
-        } catch {
-          /* 退出前刷新失败不阻塞 */
+          dbg("flush done");
+        } catch (error) {
+          dbg(`flush failed: ${String(error)}`);
         }
-        appInstance.unmount();
+        try {
+          appInstance.unmount();
+          dbg("unmount done");
+        } catch (error) {
+          dbg(`unmount failed: ${String(error)}`);
+        }
+        process.stdout.write(MOUSE_DISABLE_SEQUENCE);
+        mouseAttach.dispose();
         if (config.fullscreen) process.stdout.write(ALT_SCREEN_LEAVE + "\x1b[?25h");
         process.stdout.write("\x1b[0m");
         approvals.settleAll("cancelled");
         questions.settleAll();
         unregisterQuestions?.();
         const exit = ctx.get("appExit");
+        dbg(`appExit ${exit ? "present" : "missing"}`);
         if (exit) exit(0);
         else process.exit(0);
+        // 兜底：请求退出后 3s 仍未退出则强制结束（tree dispose 挂起时）
+        setTimeout(() => process.exit(0), 3000).unref();
       })();
     },
     openExternalEditor: externalEditor,
@@ -447,14 +474,20 @@ function apply(ctx: Context, config: PluginConfig) {
   ];
 
   // ── 渲染 ────────────────────────────────────────────────────────────────
+  let quitting = false;
+  // 鼠标：分流 process.stdin（鼠标序列 → MouseController，按键 → Ink）
+  const mouse = new MouseController();
+  const mouseAttach = attachMouseStdin(mouse);
   if (config.fullscreen) process.stdout.write(ALT_SCREEN_ENTER + "\x1b[?25l");
+  process.stdout.write(MOUSE_ENABLE_SEQUENCE);
   const appInstance: Instance = render(
     React.createElement(TuiApp, {
       actions,
       brand: config.brand,
       commands,
+      mouse,
     }),
-    { exitOnCtrlC: false },
+    { stdin: mouseAttach.stdin as unknown as NodeJS.ReadStream, exitOnCtrlC: false },
   );
 
   // ── 启动流程 ────────────────────────────────────────────────────────────
@@ -471,12 +504,20 @@ function apply(ctx: Context, config: PluginConfig) {
   return () => {
     process.removeListener("SIGINT", onSignal);
     process.removeListener("SIGTERM", onSignal);
-    appInstance.unmount();
-    if (config.fullscreen) process.stdout.write(ALT_SCREEN_LEAVE + "\x1b[?25h");
-    approvals.settleAll("cancelled");
-    questions.settleAll();
-    unregisterQuestions?.();
-    void manager.dispose();
+    if (!quitting) {
+      try {
+        appInstance.unmount();
+      } catch {
+        /* 已卸载则忽略 */
+      }
+      process.stdout.write(MOUSE_DISABLE_SEQUENCE);
+      mouseAttach.dispose();
+      if (config.fullscreen) process.stdout.write(ALT_SCREEN_LEAVE + "\x1b[?25h");
+      approvals.settleAll("cancelled");
+      questions.settleAll();
+      unregisterQuestions?.();
+      void manager.dispose();
+    }
   };
 }
 

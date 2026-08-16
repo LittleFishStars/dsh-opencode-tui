@@ -306,3 +306,6 @@ export function fallbackTitle(text: string, maxWords = 5, maxBytes = 40): string
   }
   return title;
 }
+
+/** 转圈帧序列。 */
+export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];

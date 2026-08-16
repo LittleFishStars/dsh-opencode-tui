@@ -86,3 +86,60 @@ src/
 ## 许可
 
 MIT
+
+---
+
+## opencode 原版 TUI（Go 中间层模式）
+
+除了自研 Ink TUI，本仓库还提供 **直接复用 opencode 原版 TUI** 的中间层方案：
+opencode 的 TUI 只依赖几个很小的 Go 接口（`session.Service`、`message.Service`、
+`agent.Service`、`permission.Service`、`history.Service`），本仓库 fork 了
+opencode（`opencode-fork/`），在其中实现了一套 **dsh bridge**，把全部服务调用
+转发给一个 DSH 子进程（stdio JSONL 协议），UI 完全保持 opencode 原版。
+
+```
+┌─────────────────────────────────────────────┐
+│ opencode-fork（Go）                          │
+│  ┌───────────────────────────────────────┐  │
+│  │ internal/tui/  （原版，零改动）        │  │
+│  └───────────────┬───────────────────────┘  │
+│  ┌───────────────▼───────────────────────┐  │
+│  │ internal/app/dsh/  bridge 实现 5 个接口 │ │
+│  └───────────────┬───────────────────────┘  │
+└──────────────────┼──────────────────────────┘
+                   │ stdio JSONL（子进程）
+┌──────────────────▼──────────────────────────┐
+│ dsh-opencode-tui 桥插件（src/bridge.ts）     │
+│  dsh --profile opencode --patch bridge.yml  │
+└─────────────────────────────────────────────┘
+```
+
+### 构建与运行
+
+```bash
+# 1) 编译 fork（Go ≥ 1.24）
+cd opencode-fork && go build -o opencode .
+
+# 2) 启动（DSH_BRIDGE=1 切换桥装配）
+DSH_BRIDGE=1 ./opencode
+```
+
+首次运行会在 `~/.config/opencode` 生成 opencode 自己的配置；会话与消息
+全部存在 DSH 的 `~/.dsh/sessions`（与 dsh web 互通）。Ctrl+C 退出对话框
+默认选 No（防误退），Tab 切到 Yes 后 Enter 退出——这是 opencode 原版行为。
+
+### 桥协议
+
+- Go → DSH：`{"id":1,"method":"session.create","params":{...}}`
+- DSH → Go：`{"id":1,"result":...}` / `{"event":"message/updated","sessionId":...,"message":{...}}`
+- 事件：`agent/start|done`、`message/created|updated`、`session/title`、
+  `approval/request|resolved`、`question/request`
+- 审批：DSH `approval/request` → opencode 权限对话框 → `approval.decide` 回写
+- 回归测试：`python3 scripts/pty-test5.py`（真实 PTY 驱动 fork + 桥）
+
+### 开发
+
+```bash
+cd opencode-fork && go build -o opencode .        # fork 编译
+DSH_BRIDGE=1 go run ./cmd/bridge-harness           # 桥单测（不经 TUI）
+```

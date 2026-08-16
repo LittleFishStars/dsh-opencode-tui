@@ -5,3 +5,8 @@ dist/
 .dsh-home/
 *.log
 __pycache__/
+.go-home/
+.xdg-config/
+.xdg-data/
+opencode-fork/opencode
+opencode-fork/bridge-harness

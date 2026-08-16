@@ -1,0 +1,12 @@
+# dsh-opencode-bridge overlay：把 opencode-tui 插件替换为 stdio 桥插件。
+# 用法：dsh --profile opencode --patch bridge.yml
+# 由 opencode fork 的 Go 中间层（internal/app/dsh）自动使用。
+
+- id: dsh-opencode-tui
+  disabled: true
+
+- insert:
+    - id: dsh-opencode-bridge
+      name: dsh-opencode-tui/bridge
+      config:
+        provider: deepseek-official

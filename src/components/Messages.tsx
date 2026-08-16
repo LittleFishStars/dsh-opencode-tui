@@ -1,14 +1,17 @@
 /**
- * 消息列表：虚拟滚动 + 跟随底部 + opencode 风格的 working/help 行。
+ * 消息列表：虚拟滚动 + 跟随底部 + opencode 风格的 working/help 行 + 鼠标支持。
+ *
+ * 滚动数学（行数）与渲染布局严格一致：每条消息高度 = 估算高度（含安全余量），
+ * 无额外行距；顶部用 offset spacer 对齐窗口。
  */
-import React, { useMemo, useRef, useState, useEffect } from "react";
+import React, { useMemo, useRef, useState, useEffect, useCallback } from "react";
 import { Box, Text, useInput } from "ink";
 import type { MessageView } from "../projection.js";
 import type { Theme } from "../theme.js";
-import { MessageBlock, estimateMessageHeight } from "./Message.js";
-import { truncate } from "../util.js";
-
-export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+import { MessageBlock, estimateMessageHeight, collapsibleKind, expandedId, type BodyExpanded } from "./Message.js";
+import { SPINNER_FRAMES, truncate } from "../util.js";
+import { getStore } from "../store.js";
+import type { MouseEventData } from "../mouse.js";
 
 interface UiMessage {
   view: MessageView;
@@ -22,6 +25,14 @@ export function messageKey(view: MessageView): string {
   return view.tool.id;
 }
 
+/** 命中区间（屏幕行号，1-based 屏幕坐标 → 区域内行号 = y - 1）。 */
+interface HitRange {
+  key: string;
+  kind: "thinking" | "tool" | "user";
+  startRow: number;
+  endRow: number;
+}
+
 export interface MessagesProps {
   messages: MessageView[];
   width: number;
@@ -30,14 +41,16 @@ export interface MessagesProps {
   busy: boolean;
   task: string;
   spinFrame: number;
+  /** 折叠块展开状态 map（thinking:<key> / tool:<key>） */
+  expanded: Record<string, boolean>;
   /** 是否显示初始屏（无会话时） */
   showInitial: boolean;
   /** 初始屏标题（如 opencode ⌬） */
   brand: string;
   /** 加载中（会话切换） */
   loading: boolean;
-  onPageUp?: () => void;
-  onPageDown?: () => void;
+  /** 注册鼠标处理器（返回 true = 已消费） */
+  onRegisterMouse?: (handler: (e: MouseEventData) => boolean) => () => void;
 }
 
 function workingTask(messages: MessageView[]): string | null {
@@ -58,9 +71,11 @@ export function Messages({
   busy,
   task,
   spinFrame,
+  expanded,
   showInitial,
   brand,
   loading,
+  onRegisterMouse,
 }: MessagesProps): React.ReactElement {
   const [scrollTop, setScrollTop] = useState(0);
   const [follow, setFollow] = useState(true);
@@ -69,30 +84,41 @@ export function Messages({
   scrollTopRef.current = scrollTop;
   followRef.current = follow;
 
+  const textWidth = Math.max(10, width - 3);
+
   const uiMessages = useMemo<UiMessage[]>(() => {
-    const textWidth = Math.max(10, width - 3);
-    return messages.map((view) => ({
-      view,
-      height: estimateMessageHeight(view, textWidth),
-    }));
-  }, [messages, width]);
+    return messages.map((view) => {
+      const key = messageKey(view);
+      const exp: BodyExpanded = {
+        thinking: view.kind === "assistant" && view.thinking !== "" && expanded[expandedId("thinking", key)] === true,
+        tool: view.kind === "tool" && expanded[expandedId("tool", key)] === true,
+      };
+      return { view, height: estimateMessageHeight(view, textWidth, exp) };
+    });
+  }, [messages, textWidth, expanded]);
 
   const totalHeight = useMemo(() => {
     if (uiMessages.length === 0) return 0;
-    return uiMessages.reduce((acc, m) => acc + m.height + 1, 0) - 1;
+    return uiMessages.reduce((acc, m) => acc + m.height, 0);
   }, [uiMessages]);
 
   const maxScroll = Math.max(0, totalHeight - height);
+  const maxScrollRef = useRef(maxScroll);
+  maxScrollRef.current = maxScroll;
+
+  const clamp = useCallback((v: number) => Math.max(0, Math.min(maxScrollRef.current, v)), []);
 
   // 新内容到来时跟随底部
   const lastSeq = messages.length > 0 ? messages[messages.length - 1]!.seq : 0;
   useEffect(() => {
     if (followRef.current) {
-      setScrollTop(maxScroll);
+      setScrollTop(maxScrollRef.current);
     }
-  }, [lastSeq, maxScroll, follow]);
-
-  const clamp = (v: number) => Math.max(0, Math.min(maxScroll, v));
+    // 滚动位置超出新上限时收拢
+    else if (scrollTopRef.current > maxScrollRef.current) {
+      setScrollTop(maxScrollRef.current);
+    }
+  }, [lastSeq, maxScroll]);
 
   useInput((_input, key) => {
     if (key.pageDown) {
@@ -113,13 +139,13 @@ export function Messages({
   // 渲染窗口：覆盖 [scrollTop, scrollTop+height]，只包含能完整放下的消息
   const window = useMemo(() => {
     if (uiMessages.length === 0) {
-      return { offset: 0, visible: [] as UiMessage[], pad: height };
+      return { offset: 0, visible: [] as UiMessage[], pad: height, ranges: [] as HitRange[] };
     }
     let start = 0;
     let offset = 0;
     let acc = 0;
     for (let i = 0; i < uiMessages.length; i++) {
-      const h = uiMessages[i]!.height + 1;
+      const h = uiMessages[i]!.height;
       if (acc + h > scrollTop) {
         start = i;
         offset = acc;
@@ -128,15 +154,61 @@ export function Messages({
       acc += h;
     }
     const visible: UiMessage[] = [];
+    const ranges: HitRange[] = [];
     let used = offset;
     for (let i = start; i < uiMessages.length; i++) {
-      const h = uiMessages[i]!.height + 1;
+      const h = uiMessages[i]!.height;
       if (used - offset + h > height) break;
       visible.push(uiMessages[i]!);
+      ranges.push({
+        key: messageKey(uiMessages[i]!.view),
+        kind: collapsibleKind(uiMessages[i]!.view) ?? "user",
+        startRow: used,
+        endRow: used + h,
+      });
       used += h;
     }
-    return { offset, visible, pad: Math.max(0, height - (used - offset)) };
+    return { offset, visible, pad: Math.max(0, height - (used - offset)), ranges };
   }, [uiMessages, scrollTop, height]);
+
+  // 鼠标：滚轮滚动 + 点击折叠头
+  const rangesRef = useRef<HitRange[]>([]);
+  rangesRef.current = window.ranges;
+  const widthRef = useRef(width);
+  widthRef.current = width;
+  useEffect(() => {
+    if (!onRegisterMouse) return;
+    return onRegisterMouse((e: MouseEventData) => {
+      if (e.type === "wheel") {
+        if (e.dx > 0) {
+          // 向下滚 → 内容下移（若已在底部则跟随）
+          const next = clamp(scrollTopRef.current + 3);
+          setScrollTop(next);
+          if (next >= maxScrollRef.current) setFollow(true);
+        } else {
+          setFollow(false);
+          setScrollTop(clamp(scrollTopRef.current - 3));
+        }
+        return true;
+      }
+      if (e.type === "mousedown" && e.button === 0) {
+        // 命中检测：消息区占据屏幕第 1 行起（statusbar 在最底部）
+        const areaRow = e.y - 1;
+        if (areaRow < 0) return false;
+        for (const range of rangesRef.current) {
+          if (areaRow >= range.startRow && areaRow < range.endRow) {
+            if (range.kind !== "user" && areaRow === range.startRow) {
+              getStore().toggleExpanded(expandedId(range.kind as "thinking" | "tool", range.key));
+              return true;
+            }
+            return true;
+          }
+        }
+        return false;
+      }
+      return false;
+    });
+  }, [onRegisterMouse, clamp]);
 
   // 底部工作行 + 帮助行（opencode 风格）
   const workingLine = ((): React.ReactElement | null => {
@@ -187,7 +259,7 @@ export function Messages({
         {window.offset > 0 ? <Box height={window.offset} /> : null}
         {window.visible.map((um) => (
           <Box key={messageKey(um.view)} flexDirection="column" height={um.height}>
-            <MessageBlock view={um.view} theme={theme} width={Math.max(10, width - 3)} />
+            <MessageBlock view={um.view} theme={theme} width={textWidth} expanded={expandedFor(um.view, expanded)} spinFrame={um.view.kind === "tool" && um.view.tool.status === "running" ? spinFrame : undefined} />
           </Box>
         ))}
         {/* 底部的空行间隔 + 填充 */}
@@ -205,4 +277,12 @@ export function Messages({
       </Box>
     </Box>
   );
+}
+
+function expandedFor(view: MessageView, expanded: Record<string, boolean>): BodyExpanded {
+  const key = messageKey(view);
+  return {
+    thinking: view.kind === "assistant" && view.thinking !== "" && expanded[expandedId("thinking", key)] === true,
+    tool: view.kind === "tool" && expanded[expandedId("tool", key)] === true,
+  };
 }

@@ -9,7 +9,9 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import type { Theme } from "../theme.js";
 import type { KeyBinding } from "../keys.js";
-import { truncate } from "../util.js";
+import { truncate, widthOf } from "../util.js";
+import { getStore } from "../store.js";
+import type { MouseEventData } from "../mouse.js";
 
 export interface DialogItem {
   id: string;
@@ -19,7 +21,12 @@ export interface DialogItem {
   icon?: string;
 }
 
-/** 对话框外壳：全屏覆盖层 + 居中。 */
+/** 对话框尺寸（屏幕宽高 → 对话框宽高）。 */
+export function dialogSize(width: number, height: number): { width: number; height: number } {
+  return { width: Math.min(width - 6, 60), height: Math.min(height - 4, 24) };
+}
+
+/** 对话框外壳：全屏覆盖层 + 居中 + 深灰背景 + 矩形上报（鼠标命中用）。 */
 export function Dialog({
   theme,
   width,
@@ -33,20 +40,27 @@ export function Dialog({
   title: string;
   children: React.ReactNode;
 }): React.ReactElement {
-  const dialogWidth = Math.min(width - 6, 60);
-  const dialogHeight = Math.min(height - 4, 24);
+  const size = dialogSize(width, height);
+  const left = Math.floor((width - size.width) / 2);
+  const top = Math.floor((height - size.height) / 2);
+  useEffect(() => {
+    const store = getStore();
+    store.setDialogRect({ left, top, width: size.width, height: size.height });
+    return () => store.setDialogRect(null);
+  }, [left, top, size.width, size.height]);
   return (
-    <Box position="absolute" width={width} height={height} flexDirection="column" alignItems="center" justifyContent="center">
+    <Box position="absolute" top={top} left={left} width={size.width} height={size.height} flexDirection="column">
       <Box
-        width={dialogWidth}
-        height={dialogHeight}
+        width={size.width}
+        height={size.height}
         flexDirection="column"
         borderStyle="round"
         borderColor={theme.borderFocused}
+        backgroundColor={theme.dialogBg}
         paddingLeft={1}
         paddingRight={1}
       >
-        <Text bold={true} color={theme.primary}>
+        <Text bold={true} color={theme.primary} backgroundColor={theme.dialogBg}>
           {title}
         </Text>
         <Box height={1} />
@@ -68,6 +82,8 @@ export interface ListDialogProps {
   onClose: () => void;
   /** 空列表文案 */
   emptyText?: string;
+  /** 注册鼠标处理器（点击条目/滚轮） */
+  onRegisterMouse?: (handler: (e: MouseEventData) => boolean) => () => void;
 }
 
 export function ListDialog({
@@ -80,6 +96,7 @@ export function ListDialog({
   onConfirm,
   onClose,
   emptyText = "No items",
+  onRegisterMouse,
 }: ListDialogProps): React.ReactElement {
   const [filter, setFilter] = useState("");
   const [selected, setSelected] = useState(0);
@@ -130,6 +147,47 @@ export function ListDialog({
 
   const visible = filtered.slice(0, Math.max(1, height - 8));
   const listHeight = Math.max(1, height - 8);
+
+  // 鼠标：点击条目选中（双击确认），滚轮移动选择
+  const visibleRef = useRef(visible);
+  visibleRef.current = visible;
+  const onConfirmRef = useRef(onConfirm);
+  onConfirmRef.current = onConfirm;
+  const lastClickRef = useRef<{ row: number; at: number } | null>(null);
+  useEffect(() => {
+    if (!onRegisterMouse) return;
+    return onRegisterMouse((e: MouseEventData) => {
+      if (e.type === "wheel") {
+        setSelected((prev) => {
+          const next = e.dx > 0 ? prev + 3 : prev - 3;
+          return Math.max(0, Math.min(visibleRef.current.length - 1, next));
+        });
+        return true;
+      }
+      if (e.type === "mousedown" && e.button === 0) {
+        const size = dialogSize(width, height);
+        const left = Math.floor((width - size.width) / 2);
+        const top = Math.floor((height - size.height) / 2);
+        const innerX = e.x - left;
+        const innerY = e.y - top;
+        if (innerX < 1 || innerX >= size.width - 1) return false;
+        const listStart = filterable ? 3 : 2; // title + spacer (+ filter)
+        const row = innerY - listStart;
+        if (row < 0 || row >= visibleRef.current.length) return true;
+        const now = Date.now();
+        const last = lastClickRef.current;
+        const isDouble = last !== null && last.row === row && now - last.at < 1000;
+        lastClickRef.current = { row, at: now };
+        setSelected(row);
+        if (isDouble) {
+          const item = visibleRef.current[row];
+          if (item) onConfirmRef.current(item);
+        }
+        return true;
+      }
+      return false;
+    });
+  }, [onRegisterMouse, filterable, width, height]);
 
   return (
     <Dialog theme={theme} width={width} height={height} title={title}>

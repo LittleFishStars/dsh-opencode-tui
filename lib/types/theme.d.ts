@@ -6,7 +6,12 @@ export interface Theme {
     name: string;
     /** 是否暗色主题 */
     dark: boolean;
+    /** 主区背景（近黑，GUI 感的主画布） */
     background: string;
+    /** 侧栏灰色背景 */
+    sidebarBg: string;
+    /** 对话框背景（区别于主区/侧栏） */
+    dialogBg: string;
     backgroundSecondary: string;
     backgroundDarker: string;
     text: string;

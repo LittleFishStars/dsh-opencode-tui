@@ -13,11 +13,21 @@ export declare const MSG_BORDER = 1;
 export declare const MSG_PADDING = 1;
 /** 消息可用文本宽度。 */
 export declare function msgTextWidth(areaWidth: number): number;
+export interface BodyExpanded {
+    thinking: boolean;
+    tool: boolean;
+}
 /** 渲染单条消息（完整）。 */
 export declare const MessageBlock: React.NamedExoticComponent<{
     view: MessageView;
     theme: Theme;
     width: number;
+    expanded: BodyExpanded;
+    spinFrame?: number;
 }>;
-/** 估算一条消息渲染后的行数（含 1 行安全余量）。 */
-export declare function estimateMessageHeight(view: MessageView, width: number): number;
+/** 估算一条消息渲染后的行数（含 1 行安全余量；折叠感知）。 */
+export declare function estimateMessageHeight(view: MessageView, width: number, expanded: BodyExpanded): number;
+/** 折叠块稳定 id。 */
+export declare function expandedId(kind: "thinking" | "tool", key: string): string;
+/** 消息是否含可折叠块（供鼠标命中判断）。 */
+export declare function collapsibleKind(view: MessageView): "thinking" | "tool" | null;

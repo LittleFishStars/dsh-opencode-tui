@@ -22,5 +22,7 @@ export interface TuiAppProps {
     actions: TuiActions;
     brand: string;
     commands: DialogItem[];
+    mouse: MouseController;
 }
-export declare function TuiApp({ actions, brand, commands }: TuiAppProps): React.ReactElement;
+export declare function TuiApp({ actions, brand, commands, mouse }: TuiAppProps): React.ReactElement;
+import type { MouseController } from "../mouse.js";
