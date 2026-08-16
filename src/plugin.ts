@@ -21,6 +21,7 @@ import type { Session, SessionEvent } from "@deepseek-ai/dsh-session";
 import "@deepseek-ai/dsh-agent-default-model";
 import { AgentManager } from "./agent.js";
 import { OcServer } from "./oc-server.js";
+import { foldSessionMeta, projectEvents, type MessageView } from "./projection.js";
 
 const name = "dsh-opencode-tui";
 
@@ -85,11 +86,37 @@ function apply(ctx: Context, config: PluginConfig) {
 
   const selection = ctx.agentDefaultModel.currentSelection();
 
+  // 历史会话重建：从 DSH 持久层加载会话投影
+  const listDshSessions = async (): Promise<Array<{ sessionId: string; title: string; views: MessageView[] }>> => {
+    const out: Array<{ sessionId: string; title: string; views: MessageView[] }> = [];
+    try {
+      const records = await ctx.sessionQuery.listSessions();
+      for (const record of records) {
+        const header = record.header;
+        try {
+          const inspection = await ctx.sessionPersistence.inspect(header.id);
+          const folded = foldSessionMeta(header.id, header.createdAt, inspection.events);
+          out.push({
+            sessionId: header.id,
+            title: folded.title,
+            views: projectEvents(inspection.events),
+          });
+        } catch {
+          /* 读不到的会话跳过 */
+        }
+      }
+    } catch {
+      /* 列表加载失败不致命 */
+    }
+    return out;
+  };
+
   // ── opencode 协议兼容层 ──────────────────────────────────────────────────
   const ocServer = new OcServer(ctx, {
     directory: cwd,
     port: config.serverPort ?? (process.env.DSH_OPENCODE_TUI_SERVER_PORT ? Number(process.env.DSH_OPENCODE_TUI_SERVER_PORT) : undefined),
     getSelection: () => ctx.agentDefaultModel.currentSelection(),
+    listDshSessions,
     onPrompt: async (text, opts, hooks) => {
       // 单活跃 agent：resume 或新建
       const manager = new AgentManager(ctx, {

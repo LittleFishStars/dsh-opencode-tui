@@ -145,7 +145,7 @@ export interface OcServerOptions {
   /** 获取当前模型选择（provider/model） */
   getSelection: () => ModelSelection | undefined;
   /** 查询 DSH 会话投影（启动时重建历史） */
-  listDshSessions?: () => Promise<Array<{ sessionId: string; title: string }>>;
+  listDshSessions?: () => Promise<Array<{ sessionId: string; title: string; views: import("./projection.js").MessageView[] }>>;
 }
 
 // ── server ─────────────────────────────────────────────────────────────────
@@ -173,6 +173,17 @@ export class OcServer {
     // 预热模型缓存
     const selection = this.opts.getSelection();
     if (selection) this.modelCache = { id: selection.model, providerID: selection.provider };
+    // 从 DSH 持久层重建历史会话（异步，不阻塞 TUI 启动）
+    void this.opts.listDshSessions?.().then((list) => {
+      for (const item of list) {
+        try {
+          this.hydrateSession(item.sessionId, item.title, item.views);
+        } catch (error) {
+          process.stderr.write(`[oc-server] hydrate ${item.sessionId} failed: ${error instanceof Error ? error.message : String(error)}\n`);
+        }
+      }
+      process.stderr.write(`[oc-server] hydrated ${list.length} sessions\n`);
+    });
     return this.port;
   }
 
@@ -242,6 +253,20 @@ export class OcServer {
       this.sessions.set(id, state);
     }
     return state;
+  }
+
+  /** 把 DSH 会话视图重建为 opencode 会话状态（进程内；ocSessionId 由 dshSessionId 稳定哈希）。 */
+  private hydrateSession(dshSessionId: string, title: string, views: import("./projection.js").MessageView[]): void {
+    const ocSessionId = ocIdFromDsh(dshSessionId);
+    const existing = this.sessions.get(ocSessionId);
+    const state = existing ?? this.getOrCreateSession(ocSessionId, this.opts.directory);
+    state.dshSessionId = dshSessionId;
+    if (title) state.title = title;
+    if (existing) return;
+    state.messages = viewsToLegacyMessages(ocSessionId, views, this.selection());
+    for (const m of state.messages) {
+      state.updatedAt = Math.max(state.updatedAt, m.info.time.updated ?? m.info.time.created);
+    }
   }
 
   private selection(): ModelRef | undefined {
@@ -1040,6 +1065,85 @@ export class OcServer {
 
 function projectIdOf(directory: string): string {
   return createHash("sha1").update(directory).digest("hex");
+}
+
+/** DSH 会话 id → 稳定 opencode 会话 id（重启后保持一致）。 */
+function ocIdFromDsh(dshSessionId: string): string {
+  return "ses_" + createHash("sha1").update(dshSessionId).digest("hex").slice(0, 20);
+}
+
+/** MessageView[] → 旧协议消息列表（user/assistant/tool 卡）。 */
+function viewsToLegacyMessages(
+  sessionID: string,
+  views: import("./projection.js").MessageView[],
+  sel: ModelRef | undefined,
+): LegacyMessage[] {
+  const out: LegacyMessage[] = [];
+  const model = { providerID: sel?.providerID ?? "provider", modelID: sel?.id ?? "model" };
+  let currentAssistant: LegacyMessage | undefined;
+  for (const v of views) {
+    if (v.kind === "user") {
+      out.push({
+        info: {
+          id: v.id,
+          sessionID,
+          role: "user",
+          time: { created: v.time, updated: v.time },
+          agent: "build",
+          model,
+        },
+        parts: [
+          { id: ocId("text"), sessionID, messageID: v.id, type: "text", text: v.content, time: { start: v.time, end: v.time } },
+        ],
+      });
+    } else if (v.kind === "assistant") {
+      const info: LegacyMessageInfo = {
+        id: v.id,
+        sessionID,
+        role: "assistant",
+        time: { created: v.time, updated: v.endedAt ?? v.time, completed: v.endedAt },
+        agent: "build",
+        model,
+        parentID: out.findLast((m) => m.info.role === "user")?.info.id,
+        modelID: v.provider ? v.model : sel?.id,
+        providerID: v.provider,
+        mode: "primary",
+        path: { cwd: "", root: "" },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        finish: v.finished ? (v.reason === "completed" ? "end_turn" : v.reason === "aborted" || v.reason === "interrupted" ? "canceled" : "error") : undefined,
+      };
+      const parts: LegacyPart[] = [];
+      if (v.thinking) {
+        parts.push({ id: ocId("reasoning"), sessionID, messageID: v.id, type: "reasoning", text: v.thinking, time: { start: v.time, end: v.endedAt } });
+      }
+      if (v.text) {
+        parts.push({ id: ocId("text"), sessionID, messageID: v.id, type: "text", text: v.text, time: { start: v.time, end: v.endedAt } });
+      }
+      currentAssistant = { info, parts };
+      out.push(currentAssistant);
+    } else if (v.kind === "tool" && currentAssistant) {
+      // 工具卡归入当前 assistant 消息的 parts
+      const t = v.tool;
+      currentAssistant.parts.push({
+        id: t.id,
+        sessionID,
+        messageID: currentAssistant.info.id,
+        type: "tool",
+        tool: t.name,
+        state: {
+          status: t.status === "error" ? "error" : t.status === "done" ? "completed" : "running",
+          input: safeParse(t.arguments),
+          content: t.result ? [{ type: "text", text: t.result }] : [],
+          result: t.result,
+          error: t.error ? t.error.name : undefined,
+        },
+        callID: t.id,
+        time: { start: t.startedAt, end: t.endedAt },
+      });
+    }
+  }
+  return out;
 }
 
 function userTextFromMessage(message: { content?: Array<{ type?: string; text?: string }> }): string {

@@ -18,6 +18,7 @@ export interface OcServerOptions {
     listDshSessions?: () => Promise<Array<{
         sessionId: string;
         title: string;
+        views: import("./projection.js").MessageView[];
     }>>;
 }
 export declare class OcServer {
@@ -39,6 +40,8 @@ export declare class OcServer {
     private pushSessionEvent;
     private sessionOr404;
     private getOrCreateSession;
+    /** 把 DSH 会话视图重建为 opencode 会话状态（进程内；ocSessionId 由 dshSessionId 稳定哈希）。 */
+    private hydrateSession;
     private selection;
     /** 由 plugin 在 ctx.on('session/event') 中调用。 */
     handleDshEvent(session: {
