@@ -18,6 +18,7 @@ import { fileURLToPath } from "node:url";
 import Schema from "@deepseek-ai/schemastery";
 import type { Context } from "@deepseek-ai/cordis";
 import type { Session, SessionEvent } from "@deepseek-ai/dsh-session";
+import type { ApprovalOutcome, ApprovalRequest } from "@deepseek-ai/dsh-user-approval";
 import "@deepseek-ai/dsh-agent-default-model";
 import { AgentManager } from "./agent.js";
 import { OcServer } from "./oc-server.js";
@@ -86,6 +87,9 @@ function apply(ctx: Context, config: PluginConfig) {
 
   const selection = ctx.agentDefaultModel.currentSelection();
 
+  // 当前活跃 agent（最近一次 onPrompt 创建的会话）
+  let activeManager: AgentManager | undefined;
+
   // 历史会话重建：从 DSH 持久层加载会话投影
   const listDshSessions = async (): Promise<Array<{ sessionId: string; title: string; views: MessageView[] }>> => {
     const out: Array<{ sessionId: string; title: string; views: MessageView[] }> = [];
@@ -125,6 +129,7 @@ function apply(ctx: Context, config: PluginConfig) {
         preset: config.preset ?? process.env.DSH_OPENCODE_TUI_PRESET,
         resumeSessionId: opts.resumeSessionId,
       });
+      activeManager = manager;
       const owned = await manager.ensure();
       // 先绑定再发送（turn/start 事件在 followup 后到达，绑定必须先行）
       hooks.onSession(owned.sessionId);
@@ -137,6 +142,23 @@ function apply(ctx: Context, config: PluginConfig) {
   ctx.on("session/event", (session: Session, event: SessionEvent) => {
     ocServer.handleDshEvent(session, event);
   });
+
+  // 审批：DSH approval/request → TUI permission 对话框
+  ctx.on(
+    "approval/request",
+    (req: ApprovalRequest, next: () => Promise<ApprovalOutcome>): Promise<ApprovalOutcome> => {
+      const owned = activeManager?.current;
+      if (owned && String(req.agent.id) === String(owned.agent.id)) {
+        const outcome = ocServer.handleApproval(owned.sessionId, {
+          toolName: req.toolName,
+          callId: req.callId ? String(req.callId) : undefined,
+          reason: req.reason,
+        });
+        if (outcome) return outcome;
+      }
+      return next();
+    },
+  );
 
   // ── 启动 server + TUI ────────────────────────────────────────────────────
   let child: ChildProcess | undefined;

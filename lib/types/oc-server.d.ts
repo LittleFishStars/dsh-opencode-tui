@@ -35,7 +35,7 @@ export declare class OcServer {
     stop(): Promise<void>;
     private sendJson;
     private sseHeaders;
-    /** 推旧协议事件（{type, properties}）到全局事件流。 */
+    /** 推旧协议事件（{directory, payload: {type, properties}}）到全局事件流。 */
     private pushLegacyEvent;
     private pushSessionEvent;
     private sessionOr404;
@@ -48,6 +48,12 @@ export declare class OcServer {
         id: string;
         title?: string;
     }, event: SessionEvent): void;
+    /** DSH approval/request → opencode permission 对话框；返回决议结果。 */
+    handleApproval(dshSessionId: string, request: {
+        toolName: string;
+        callId?: string;
+        reason?: string;
+    }): Promise<"allowed-once" | "rejected"> | undefined;
     private toolPart;
     private findMessage;
     private findByDsh;

@@ -105,6 +105,8 @@ interface SessionState {
   /** 当前正在生成的 assistant 消息（增量构建） */
   pending?: PendingAssistant;
   sse: Set<ServerResponse>;
+  /** 挂起的审批（permissionID → 决议回调） */
+  permissions: Map<string, (outcome: "allowed-once" | "rejected") => void>;
 }
 
 interface PendingAssistant {
@@ -214,21 +216,24 @@ export class OcServer {
     });
   }
 
-  /** 推旧协议事件（{type, properties}）到全局事件流。 */
-  private pushLegacyEvent(properties: Record<string, unknown> & { type: string }): void {
+  /** 推旧协议事件（{directory, payload: {type, properties}}）到全局事件流。 */
+  private pushLegacyEvent(event: { type: string; properties: unknown }, directory: string): void {
     if (process.env.DSH_OC_NO_EVENTS === "1") return;
-    const payload = JSON.stringify(properties);
+    const payload = JSON.stringify({
+      directory,
+      payload: { type: event.type, properties: event.properties },
+    });
     for (const res of this.globalSse) {
       try {
-        res.write(`event: ${properties.type}\ndata: ${payload}\n\n`);
+        res.write(`event: ${event.type}\ndata: ${payload}\n\n`);
       } catch {
         /* 断连由 close 清理 */
       }
     }
   }
 
-  private pushSessionEvent(state: SessionState, properties: Record<string, unknown> & { type: string }): void {
-    this.pushLegacyEvent(properties);
+  private pushSessionEvent(state: SessionState, event: { type: string; properties: unknown }): void {
+    this.pushLegacyEvent(event, state.directory);
   }
 
   private sessionOr404(state: SessionState | undefined, res: ServerResponse): state is SessionState {
@@ -249,6 +254,7 @@ export class OcServer {
         busy: false,
         messages: [],
         sse: new Set(),
+        permissions: new Map(),
       };
       this.sessions.set(id, state);
     }
@@ -300,8 +306,7 @@ export class OcServer {
         state.pending = pending;
         this.pushSessionEvent(state, {
           type: "session.status",
-          sessionID: state.id,
-          status: { type: "busy" },
+          properties: { sessionID: state.id, status: { type: "busy" } },
         });
         const info: LegacyMessageInfo = {
           id: pending.messageId,
@@ -320,7 +325,7 @@ export class OcServer {
         state.messages.push({ info, parts: [] });
         this.pushSessionEvent(state, {
           type: "message.updated",
-          info,
+          properties: { info },
         });
         break;
       }
@@ -338,7 +343,7 @@ export class OcServer {
           }
           this.pushSessionEvent(state, {
             type: "message.part.updated",
-            part: {
+            properties: { part: {
               id: pending.textPartId,
               sessionID: state.id,
               messageID: pending.messageId,
@@ -346,13 +351,14 @@ export class OcServer {
               text: pending.text,
               time: { start: pending.startedAt },
             },
-            delta: chunk.text,
+              delta: chunk.text,
+            },
           });
         } else if (chunk.type === "reasoning-delta" && chunk.text) {
           pending.reasoning += chunk.text;
           this.pushSessionEvent(state, {
             type: "message.part.updated",
-            part: {
+            properties: { part: {
               id: pending.reasoningPartId,
               sessionID: state.id,
               messageID: pending.messageId,
@@ -360,7 +366,8 @@ export class OcServer {
               text: pending.reasoning,
               time: { start: pending.startedAt },
             },
-            delta: chunk.text,
+              delta: chunk.text,
+            },
           });
         } else if (chunk.type === "tool-call-delta") {
           const callID = chunk.id ?? "call_unknown";
@@ -376,7 +383,7 @@ export class OcServer {
             pending.tools.set(callID, tool);
             this.pushSessionEvent(state, {
               type: "message.part.updated",
-              part: this.toolPart(state, pending, tool),
+              properties: { part: this.toolPart(state, pending, tool) },
             });
           }
           tool.inputArgs += chunk.arguments ?? "";
@@ -410,7 +417,7 @@ export class OcServer {
         tool.state.input = input;
         this.pushSessionEvent(state, {
           type: "message.part.updated",
-          part: this.toolPart(state, pending, tool),
+          properties: { part: this.toolPart(state, pending, tool) },
         });
         break;
       }
@@ -431,7 +438,7 @@ export class OcServer {
             : { ...tool.state, status: "completed", content: [{ type: "text", text: resultText }], result: resultText };
           this.pushSessionEvent(state, {
             type: "message.part.updated",
-            part: this.toolPart(state, pending, tool),
+            properties: { part: this.toolPart(state, pending, tool) },
           });
         }
         break;
@@ -479,7 +486,7 @@ export class OcServer {
             }
             this.pushSessionEvent(state, {
               type: "message.updated",
-              info: msg.info,
+              properties: { info: msg.info },
             });
           }
           state.pending = undefined;
@@ -488,8 +495,7 @@ export class OcServer {
         state.updatedAt = Date.now();
         this.pushSessionEvent(state, {
           type: "session.status",
-          sessionID: state.id,
-          status: { type: "idle" },
+          properties: { sessionID: state.id, status: { type: "idle" } },
         });
         break;
       }
@@ -523,7 +529,7 @@ export class OcServer {
         });
         this.pushSessionEvent(state, {
           type: "message.updated",
-          info,
+          properties: { info },
         });
         break;
       }
@@ -533,7 +539,7 @@ export class OcServer {
           state.title = data.title;
           this.pushSessionEvent(state, {
             type: "session.updated",
-            info: this.legacySessionInfo(state),
+            properties: { info: this.legacySessionInfo(state) },
           });
         }
         break;
@@ -541,6 +547,41 @@ export class OcServer {
       default:
         break;
     }
+  }
+
+  /** DSH approval/request → opencode permission 对话框；返回决议结果。 */
+  handleApproval(
+    dshSessionId: string,
+    request: { toolName: string; callId?: string; reason?: string },
+  ): Promise<"allowed-once" | "rejected"> | undefined {
+    const state = this.findByDsh(dshSessionId);
+    if (!state) return undefined;
+    const permissionID = `perm_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
+    const lastMsg = [...state.messages].reverse().find((m) => m.info.role === "assistant");
+    const permission = {
+      id: permissionID,
+      sessionID: state.id,
+      permission: request.toolName,
+      patterns: [] as string[],
+      metadata: { reason: request.reason ?? "", title: `Allow ${request.toolName}?` },
+      always: [] as string[],
+      ...(request.callId ? { tool: { messageID: lastMsg?.info.id ?? "", callID: request.callId } } : {}),
+    };
+    return new Promise((resolve) => {
+      state.permissions.set(permissionID, resolve);
+      this.pushSessionEvent(state, {
+        type: "permission.asked",
+        properties: permission,
+      });
+      // 超时兜底：30s 无应答按拒绝（fail-closed）
+      setTimeout(() => {
+        const pending = state.permissions.get(permissionID);
+        if (pending) {
+          state.permissions.delete(permissionID);
+          pending("rejected");
+        }
+      }, 30_000).unref?.();
+    });
   }
 
   private toolPart(state: SessionState, pending: PendingAssistant, tool: PendingTool): LegacyToolPart {
@@ -753,6 +794,29 @@ export class OcServer {
       return;
     }
 
+    // ── v2 permission reply ──
+    const permReply = path.match(/^\/permission\/([^/]+)\/reply$/);
+    if (permReply && method === "POST") {
+      const requestID = permReply[1]!;
+      const payload = body ? safeParse(body) : {};
+      const reply = (payload.reply ?? payload.response) as string | undefined;
+      // 查找挂起的审批
+      for (const state of this.sessions.values()) {
+        const resolve = state.permissions.get(requestID);
+        if (resolve) {
+          state.permissions.delete(requestID);
+          resolve(reply === "reject" ? "rejected" : "allowed-once");
+          this.pushSessionEvent(state, {
+            type: "permission.replied",
+            properties: { sessionID: state.id, permissionID: requestID, response: reply ?? "reject" },
+          });
+          break;
+        }
+      }
+      this.sendJson(res, 200, {});
+      return;
+    }
+
     // ── 旧路径 ──
     if (path === "/path" && method === "GET") {
       this.sendJson(res, 200, {
@@ -914,7 +978,7 @@ export class OcServer {
           info,
           parts: [{ id: ocId("text"), sessionID: state.id, messageID: messageId, type: "text", text, time: { start: now, end: now } }],
         });
-        this.pushSessionEvent(state, { type: "message.updated", info });
+        this.pushSessionEvent(state, { type: "message.updated", properties: { info } });
         // 触发 DSH agent
         void this.opts
           .onPrompt(text, { resumeSessionId: state.dshSessionId }, { onSession: (dshId) => this.bindDshSession(state.id, dshId) })
@@ -952,6 +1016,38 @@ export class OcServer {
       }
       if (method === "POST" && sub === "abort") {
         this.sendJson(res, 200, {});
+        return;
+      }
+      if (method === "POST" && sub === "permissions") {
+        // POST /session/:id/permissions/:permissionID，body {response: "once"|"always"|"reject"}
+        const m2 = path.match(/^\/session\/([^/]+)\/permissions\/([^/]+)$/);
+        if (m2) {
+          const state = this.sessions.get(m2[1]!);
+          if (!state) {
+            this.sendJson(res, 404, { _tag: "NotFoundError", message: "Session not found" });
+            return;
+          }
+          const permissionID = m2[2]!;
+          const payload = body ? safeParse(body) : {};
+          const response = payload.response as string | undefined;
+          const resolve = state.permissions.get(permissionID);
+          if (resolve) {
+            state.permissions.delete(permissionID);
+            const outcome = response === "reject" ? "rejected" : "allowed-once";
+            resolve(outcome);
+          }
+          this.pushSessionEvent(state, {
+            type: "permission.replied",
+            properties: {
+              sessionID: state.id,
+              permissionID,
+              response: response ?? "reject",
+            },
+          });
+          this.sendJson(res, 200, {});
+          return;
+        }
+        this.sendJson(res, 404, { _tag: "NotFoundError", message: `no route: ${method} ${path}` });
         return;
       }
       if (method === "POST" && sub === "summarize") {
