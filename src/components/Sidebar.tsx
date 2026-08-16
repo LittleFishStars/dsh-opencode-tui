@@ -118,7 +118,9 @@ export function Sidebar({ theme, width, height, session, model, cwd }: SidebarPr
       <Text color={theme.primary} bold={true}>
         {label}
       </Text>
-      <Text color={theme.text}>: {truncate(value, Math.max(5, width - label.length - 3))}</Text>
+      <Box flexShrink={1}>
+        <Text color={theme.text}>: {truncate(value, Math.max(5, width - label.length - 3))}</Text>
+      </Box>
     </Box>
   );
 

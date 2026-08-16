@@ -4,3 +4,4 @@ dist/
 .npm-cache/
 .dsh-home/
 *.log
+__pycache__/
