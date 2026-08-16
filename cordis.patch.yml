@@ -1,0 +1,168 @@
+# The dsh-opencode-tui bundle patch: opencode-style interactive terminal front
+# door over the dsh-base layer. Applied after dsh-base's insert; rows here
+# override base rows by id, with the profile's own cordis.patch.yml and any
+# --patch overlays still to come.
+#
+# A patch replaces the targeted row's whole `config`, so each row below
+# restates every key it owns (see the dsh-base patch for the shared
+# defaults). The dsh-base core rows that need no opencode-tui value — skills,
+# goal, plan mode, workspace context, telemetry — are inherited unchanged.
+
+# ── surface-specific values over the dsh-base layer ─────────────────────────
+
+# The opencode-tui deployment persona; DSH_OPENCODE_TUI_PERSONA overrides the
+# coding-agent default (the base persona is empty).
+- id: system-prompt
+  config:
+    persona: !!js process.env.DSH_OPENCODE_TUI_PERSONA ?? 'You are a coding agent.'
+
+# The native DeepSeek adapter, pinned to the harness defaults: full thinking
+# at max effort, key and base URL from the launching environment. The base
+# entry defers both to the `llm-deepseek:` settings section; the settings
+# document still overrides these entries per request when it carries one.
+# rc.6 schema key is `apiKeyEnv` (credential-ref env var NAME, default
+# DEEPSEEK_API_KEY).
+- id: llm-deepseek
+  config:
+    apiKeyEnv: 'DEEPSEEK_API_KEY'
+    baseURL: !!js process.env.DEEPSEEK_BASE_URL
+    thinking: enabled
+    reasoningEffort: max
+
+# The TUI creates (or resumes) its agent at runtime through the agent
+# factory; no declarative agents are started at boot, and the configured
+# agent list stays the base's empty default.
+- id: agent-loop
+  config:
+    agents: []
+
+# ── agent presets ────────────────────────────────────────────────────────────
+#
+# The model-facing plugin set moves INTO the agent-presets roster: every
+# session composes its tools/prompt sections from one preset directory
+# (standard/code/minimal/cordis) instead of host rows. The dsh CLI's
+# profile-boot overlays its shipped `config/agent-presets/` root onto the
+# roster automatically, and the roster appends the user-authored
+# `$DSH_HOME/.agent-presets` root. Mirroring the official dsh-web-app patch:
+# every dsh-base row a preset owns is disabled here, so a minimal agent does
+# not leak host-layer tools.
+
+- id: agent-instructions
+  disabled: true
+
+- id: command-compact
+  disabled: true
+
+# compaction lives in the preset's own isolate realm (standard/code/cordis
+# carry `compaction-basic` with package defaults; minimal has none).
+- id: compaction-basic
+  disabled: true
+
+- id: plan-mode
+  disabled: true
+
+- id: skill-filesystem
+  disabled: true
+
+- id: tool-bash
+  disabled: true
+
+- id: tool-fs
+  disabled: true
+
+- id: tool-fs-search
+  disabled: true
+
+- id: tool-goal
+  disabled: true
+
+- id: tool-jobs
+  disabled: true
+
+- id: tool-pwsh
+  disabled: true
+
+- id: tool-ralph
+  disabled: true
+
+- id: tool-result-pruner
+  disabled: true
+
+- id: tool-skill
+  disabled: true
+
+- id: tool-str-replace-editor
+  disabled: true
+
+# Delegation tools (subagent spawn/fork, controls, workflows) are preset rows
+# now; the preset's `delegation` group re-adds them with package defaults.
+- id: tool-subagent
+  disabled: true
+
+- id: tool-subagent-control
+  disabled: true
+
+- id: tool-subagent-fork
+  disabled: true
+
+- id: tool-subagent-list-agents
+  disabled: true
+
+- id: tool-todo
+  disabled: true
+
+- id: tool-web
+  disabled: true
+
+- id: tool-workflow
+  disabled: true
+
+- id: workflow-worker-thread
+  disabled: true
+
+# Windows has no sandbox confinement backend yet (sandbox-local's win32
+# chain is empty); use danger-full-access on Windows so bash commands can
+# run. Other platforms keep the base workspace-write default.
+- id: sandbox-policy
+  config:
+    mode: !!js "process.platform === 'win32' ? 'danger-full-access' : (process.env.DSH_PERMISSION_MODE ?? 'workspace-write')"
+    workspaceRoot: !!js process.cwd()
+
+# On Windows, skip approval prompts (no sandbox = the user's terminal trust
+# model, matching every other terminal coding agent).
+- id: approval
+  config:
+    policy: !!js "process.platform === 'win32' ? 'never' : ((process.env.DSH_PERMISSION_MODE ?? 'workspace-write') === 'danger-full-access' ? 'never' : 'ask')"
+
+# Sessions live in the shared JSONL store (~/.dsh/sessions) — the same
+# backend dsh web writes — so resume here and the web session list see each
+# other. The row itself comes from the dsh-base layer; this override only
+# re-points the root when DSH_OPENCODE_SESSION_ROOT is set (test isolation).
+- id: session-persistence-jsonl
+  config:
+    root: !!js process.env.DSH_OPENCODE_SESSION_ROOT ?? dshHomePath('sessions')
+
+# ── dsh-opencode-tui rows ───────────────────────────────────────────────────
+
+- insert:
+    # The agent-preset roster: `ctx.agentPresets`, the service the TUI
+    # composes every session's model-facing world from. Same as the web app.
+    - id: agent-presets
+      name: '@deepseek-ai/dsh-agent-presets'
+      config:
+        default: standard
+
+    # The interactive front door. The plugin creates/resumes its agent at
+    # runtime and disposes the whole app tree (exiting the process) when the
+    # TUI unmounts. `dsh --profile opencode --resume <sessionId>` feeds the
+    # session id through cmdlineArgs (or set sessionId in the config).
+    - id: dsh-opencode-tui
+      name: dsh-opencode-tui
+      config:
+        provider: deepseek-official
+        # Alt-screen fullscreen（opencode 同款）：退出时恢复终端。
+        fullscreen: true
+        # 每个请求实际生效的推理强度，按当前路由的 adapter 档位校验
+        # （deepseek: off/high/max）——不在档位表里的值被忽略，回落 adapter
+        # 默认值。优先于模型选择里的 reasoning。
+        effort: max
