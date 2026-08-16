@@ -1,7 +1,28 @@
+/**
+ * opencode server 协议兼容层：HTTP 服务外观。
+ *
+ * 职责边界（按功能拆分，见各模块）：
+ * - `types.ts`        协议类型与常量
+ * - `session-store.ts` 会话存储（生命周期/SSE 推送/模型选择）
+ * - `event-mapper.ts`  DSH 事件 → opencode 事件（handleDshEvent/审批/提问）
+ * - `routes/api.ts`   v2 路由（/api/*）
+ * - `routes/legacy.ts` 旧协议路由（/session/:id/* 与杂项旧路径）
+ * - `http-util.ts`    HTTP 工具（JSON/SSE/body）
+ * - `oc-proto.ts`     协议对象构造（located/sessionInfo/model/agent）
+ * - `projection.ts`   DSH 会话事件日志 → 消息视图 → 旧协议消息
+ *
+ * 本类只保留：HTTP 服务器生命周期、路由分发、prompt 触发（onPrompt 回调）、
+ * 删除会话编排，以及路由模块依赖的服务方法（RouterContext 实现）。
+ */
+import { type ServerResponse } from "node:http";
 import type { Context } from "@deepseek-ai/cordis";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import type { ModelSelection } from "@deepseek-ai/dsh-agent";
-import { type ModelRef } from "./oc-proto.js";
+import { type LegacyModel, type ModelRef } from "./oc-proto.js";
+import { SessionStore } from "./session-store.js";
+import { DshEventMapper } from "./event-mapper.js";
+import { type SessionState } from "./types.js";
+import type { RouterContext } from "./routes/context.js";
 export interface OcServerOptions {
     directory: string;
     /** 监听端口（默认 0 = 随机） */
@@ -47,89 +68,59 @@ export interface OcServerOptions {
     /** 删除 DSH 会话（释放活跃 agent + 删除持久化数据）。由 plugin 提供。 */
     onDeleteSession?: (dshSessionId: string) => Promise<void>;
 }
-export declare class OcServer {
-    private sessions;
-    private globalSse;
+export declare class OcServer implements RouterContext {
+    readonly store: SessionStore;
+    readonly events: DshEventMapper;
+    readonly directory: string;
     private opts;
-    private ctx;
     private http;
     private port;
-    private modelCache;
-    /** 最近一次请求头里的模型上下文窗口（maxTokens；供 limit.context 百分比计算） */
-    private modelContext;
-    /** provider → 模型目录缓存（listModels 结果） */
-    private modelsCache;
-    /** 历史会话重建 promise：会话列表/详情请求等待它完成，避免 hydrate 前返回空列表。 */
-    private hydratePromise;
     constructor(ctx: Context, opts: OcServerOptions);
     start(): Promise<number>;
-    private runHydrate;
-    /** 等待历史会话重建完成（带超时兜底，避免 hydrate 挂起卡住请求）。 */
-    private waitHydrate;
     get url(): string;
     stop(): Promise<void>;
-    private sendJson;
-    private sseHeaders;
-    /** 推旧协议事件（{directory, payload: {type, properties}}）到全局事件流。 */
-    private pushLegacyEvent;
-    private pushSessionEvent;
-    /** 会话变更通知（新会话进 sync.data.session、聚合 token/cost 刷新）。 */
-    private touchSession;
-    /** 消息请求的模型切换：payload.model → 会话当前模型。 */
-    private applyRequestModel;
-    /** 触发 DSH agent（preset/model 随消息传递）并绑定会话、通知变更。 */
-    private runPrompt;
-    private sessionOr404;
-    private getOrCreateSession;
-    /** 把 DSH 会话视图重建为 opencode 会话状态（进程内；ocSessionId 由 dshSessionId 稳定哈希）。 */
-    private hydrateSession;
-    private selection;
-    /** 会话模型：会话切换的模型优先，否则全局 selection。 */
-    private sessionModel;
-    /** 列出 provider 的全部模型（带缓存）。 */
-    private listModels;
-    /** 由 plugin 在 ctx.on('session/event') 中调用。 */
+    /** DSH 事件 → opencode 事件（由 plugin 在 ctx.on('session/event') 调用）。 */
     handleDshEvent(session: {
         id: string;
         title?: string;
     }, event: SessionEvent): void;
-    /** DSH approval/request → opencode permission 对话框；返回决议结果。 */
+    /** DSH approval/request → TUI permission 对话框（由 plugin 的审批钩子调用）。 */
     handleApproval(dshSessionId: string, request: {
         toolName: string;
         callId?: string;
         reason?: string;
     }): Promise<"allowed-once" | "rejected"> | undefined;
-    /** DSH user question → opencode question 对话框；返回应答（labels 按问题顺序）。 */
-    handleQuestion(dshSessionId: string, items: Array<{
+    /** DSH user question → TUI question 对话框（由 plugin 的提问 provider 调用）。 */
+    handleQuestion(dshSessionId: string, items: Parameters<DshEventMapper["handleQuestion"]>[1]): Promise<unknown> | undefined;
+    getSessionIdByDsh(dshSessionId: string): string | undefined;
+    projectId(directory: string): string;
+    /** 旧协议 Provider（/config/providers、/provider、/api/provider、/api/model） */
+    legacyProvider(): Promise<{
         id: string;
-        question: string;
-        detail?: string;
-        header?: string;
-        options?: Array<{
-            label: string;
-            description?: string;
-        }>;
-        multiSelect?: boolean;
-    }>): Promise<unknown> | undefined;
-    private toolPart;
-    private findMessage;
-    private findByDsh;
-    /** v2 端点（/api/*）。返回是否已处理。 */
-    private handleApi;
-    /** 旧协议 /session/:id/* 子路由。返回是否已处理。 */
-    private handleLegacySession;
-    private handle;
-    private infoOf;
+        name: string;
+        source: string;
+        env: string[];
+        options: Record<string, unknown>;
+        models: Record<string, LegacyModel>;
+    } | undefined>;
     /** 旧协议 Session（/session 列表） */
-    private legacySession;
-    private legacySessionInfo;
-    private legacyProvider;
-    /** 记录 DSH session id 与 opencode session id 的绑定（agent 创建后由 plugin 调用）。 */
+    legacySession(state: SessionState): Record<string, unknown>;
+    sessionOr404(state: SessionState | undefined, res: ServerResponse): state is SessionState;
+    /** 消息请求的模型切换：payload.model → 会话当前模型。 */
+    applyRequestModel(state: SessionState, payload: Record<string, unknown>): void;
+    /** 触发 DSH agent（preset/model 随消息传递）并绑定会话、通知变更。 */
+    runPrompt(state: SessionState, text: string, opts: {
+        preset?: string;
+    }): void;
+    /** 触发 DSH agent（不通知会话变更；prompt_async 用）。返回 DSH session id。 */
+    sendPrompt(text: string, opts: {
+        resumeSessionId?: string;
+    }): Promise<string | undefined>;
     bindDshSession(ocSessionId: string, dshSessionId: string): void;
     /**
-     * 删除会话（DELETE /session/:id）：从内存移除 + 通知 TUI + 删除 DSH 持久化数据。
-     * 返回是否成功（false = 会话不存在或删除失败）。
+     * 删除会话（DELETE /session/:id）：先删 DSH 侧数据（可能抛错），
+     * 成功后移除内存状态并通知 TUI。
      */
     deleteSession(sessionId: string): Promise<boolean>;
-    getSessionIdByDsh(dshSessionId: string): string | undefined;
+    private handle;
 }

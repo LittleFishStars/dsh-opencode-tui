@@ -8,6 +8,7 @@
  * 事件词汇见 @deepseek-ai/dsh-session 的 SessionEventMap。
  */
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
+import type { LegacyMessage } from "./types.js";
 export interface ToolCallView {
     /** callId */
     id: string;
@@ -95,14 +96,6 @@ export declare function sessionStats(events: readonly SessionEvent[]): {
  * @param fallbackFromFirstUser 没有标题时用首条用户消息兜底
  */
 export declare function foldSessionMeta(id: string, createdAt: number, events: readonly SessionEvent[]): SessionMeta;
-/** 工具展示名（opencode 风格：Bash / Read / Edit ...）。 */
-export declare function toolDisplayName(name: string): string;
-/** 工具进行中的动作文案（opencode 风格）。 */
-export declare function toolAction(name: string): string;
-/** 解析工具参数 JSON → 展示摘要（opencode 风格：主参数 + 键值对）。 */
-export declare function toolParamSummary(name: string, argsJson: string, maxWidth: number): string;
-/** 从结果文本里提取语法高亮语言标签（opencode 风格代码块）。 */
-export declare function extOfPath(path: string): string;
 /** 从会话事件流提取最后一条 todo 快照（opencode Todo 形状）。 */
 export declare function todosFromEvents(events: readonly SessionEvent[]): Array<{
     id: string;
@@ -118,3 +111,11 @@ export declare function diffsFromEvents(events: readonly SessionEvent[]): Array<
     additions: number;
     deletions: number;
 }>;
+/**
+ * MessageView[] → 旧协议消息列表（user/assistant/tool 卡）。
+ * 供会话 hydrate（重启恢复）时把投影视图转成 TUI 能消费的消息形状。
+ */
+export declare function viewsToLegacyMessages(sessionID: string, views: readonly MessageView[], sel: {
+    providerID?: string;
+    id?: string;
+} | undefined, agent: string): LegacyMessage[];
