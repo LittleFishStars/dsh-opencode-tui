@@ -739,11 +739,19 @@ export class OcServer {
         break;
       }
       case "user/message": {
-        const data = event.data as { content?: Array<{ type?: string; text?: string }>; source?: unknown };
+        const data = event.data as { content?: Array<{ type?: string; text?: string }>; source?: { kind?: string } };
         const text = userTextFromMessage(data);
         if (!text.trim()) break;
-        const messageId = ocId("msg");
+        // 过滤系统注入：runtime context / sandbox 快照等（plugin 来源）不进消息列表
+        if (data.source && data.source.kind !== "user") break;
         const now = Date.now();
+        // 去重：用户消息已由 POST /session/:id/message 添加（同文本、时间接近时跳过）
+        const lastUser = [...state.messages].reverse().find((m) => m.info.role === "user");
+        if (lastUser && now - lastUser.info.time.created < 5000) {
+          const lastText = (lastUser.parts.find((p) => p.type === "text") as { text?: string } | undefined)?.text;
+          if (lastText === text) break;
+        }
+        const messageId = ocId("msg");
         const sel = this.sessionModel(state);
         const info: LegacyMessageInfo = {
           id: messageId,
