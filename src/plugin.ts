@@ -136,10 +136,12 @@ function apply(ctx: Context, config: PluginConfig) {
   };
 
   // ── opencode 协议兼容层 ──────────────────────────────────────────────────
+  const llm = ctx.get("llm") as { listModels?: (provider: string) => Promise<Array<{ id: string; name: string; description?: string; contextWindow?: number }>> } | undefined;
   const ocServer = new OcServer(ctx, {
     directory: cwd,
     port: config.serverPort ?? (process.env.DSH_OPENCODE_TUI_SERVER_PORT ? Number(process.env.DSH_OPENCODE_TUI_SERVER_PORT) : undefined),
     getSelection: () => ctx.agentDefaultModel.currentSelection(),
+    listModels: llm?.listModels ? ((provider) => llm.listModels!(provider)) : undefined,
     listDshSessions,
     onPrompt: async (text, opts, hooks) => {
       // 单活跃 agent：同一会话（resumeSessionId 匹配当前）直接 followup，
@@ -163,6 +165,7 @@ function apply(ctx: Context, config: PluginConfig) {
         cwd,
         preset: config.preset ?? process.env.DSH_OPENCODE_TUI_PRESET,
         permissionPreset: opts.preset,
+        model: opts.model,
         resumeSessionId: opts.resumeSessionId,
       });
       activeManager = manager;

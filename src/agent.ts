@@ -20,6 +20,8 @@ export interface AgentManagerOptions {
   preset?: string;
   /** 权限 preset（read-only / workspace-write / danger-full-access；来自 TUI 当前 agent） */
   permissionPreset?: string;
+  /** TUI 模型选择窗口切换的模型（覆盖 selection） */
+  model?: { providerID: string; id: string };
 }
 
 export interface OwnedAgent {
@@ -74,6 +76,15 @@ export class AgentManager {
     };
   }
 
+  /** 生效的模型选择：TUI 切换的模型优先，否则默认 selection。 */
+  private effectiveSelection(): ModelSelection {
+    const override = this.opts.model;
+    if (override?.providerID && override.id) {
+      return { provider: override.providerID, model: override.id };
+    }
+    return this.opts.selection;
+  }
+
   get current(): OwnedAgent | null {
     return this.owned;
   }
@@ -87,10 +98,11 @@ export class AgentManager {
     if (this.owned) return this.owned;
     const agents = this.ctx.get("agents")!;
     const { selection, cwd } = this.opts;
+    const effective = this.effectiveSelection();
     if (this.opts.resumeSessionId) {
       const { agent } = await agents.resume({
         resumeSessionId: SessionId(this.opts.resumeSessionId),
-        setup: this.buildSetup(selection),
+        setup: this.buildSetup(effective),
       });
       this.owned = {
         agent,
@@ -102,10 +114,10 @@ export class AgentManager {
         sessionId: SessionId(`session-${randomUUID()}`),
         meta: { cwd },
         agentOptions: {
-          provider: selection.provider,
-          model: selection.model,
+          provider: effective.provider,
+          model: effective.model,
         },
-        setup: this.buildSetup(selection),
+        setup: this.buildSetup(effective),
       });
       this.owned = {
         agent,

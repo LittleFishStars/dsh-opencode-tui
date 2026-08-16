@@ -135,6 +135,8 @@ interface SessionState {
   busy: boolean;
   /** 当前选中的 agent（read-only / workspace-write / full-access；决定下条消息的 preset） */
   currentAgent: string;
+  /** 会话当前模型（TUI 模型选择窗口切换；缺省用全局 selection） */
+  currentModel?: ModelRef;
   messages: LegacyMessage[];
   /** 当前正在生成的 assistant 消息（增量构建） */
   pending?: PendingAssistant;
@@ -179,11 +181,13 @@ export interface OcServerOptions {
    *  hooks.onSession 必须在 send 之前同步调用（避免 turn/start 事件早于绑定而丢失）。 */
   onPrompt: (
     text: string,
-    opts: { resumeSessionId?: string; preset?: string },
+    opts: { resumeSessionId?: string; preset?: string; model?: ModelRef },
     hooks: { onSession: (dshSessionId: string) => void },
   ) => Promise<string | undefined>;
   /** 获取当前模型选择（provider/model） */
   getSelection: () => ModelSelection | undefined;
+  /** 列出某 provider 可用的全部模型（模型选择窗口的数据源） */
+  listModels?: (provider: string) => Promise<Array<{ id: string; name: string; description?: string; contextWindow?: number }>>;
   /** 查询 DSH 会话投影（启动时重建历史） */
   listDshSessions?: () => Promise<Array<{ sessionId: string; title: string; preset?: string; views: import("./projection.js").MessageView[] }>>;
 }
@@ -216,6 +220,8 @@ export class OcServer {
   private modelCache: ModelRef | undefined;
   /** 最近一次请求头里的模型上下文窗口（maxTokens；供 limit.context 百分比计算） */
   private modelContext: number | undefined;
+  /** provider → 模型目录缓存（listModels 结果） */
+  private modelsCache = new Map<string, Array<{ id: string; name: string; description?: string; contextWindow?: number }>>();
   /** 历史会话重建 promise：会话列表/详情请求等待它完成，避免 hydrate 前返回空列表。 */
   private hydratePromise: Promise<void> | undefined;
 
@@ -358,6 +364,25 @@ export class OcServer {
     return this.modelCache;
   }
 
+  /** 会话模型：会话切换的模型优先，否则全局 selection。 */
+  private sessionModel(state: SessionState): ModelRef | undefined {
+    return state.currentModel ?? this.selection();
+  }
+
+  /** 列出 provider 的全部模型（带缓存）。 */
+  private async listModels(provider: string): Promise<Array<{ id: string; name: string; description?: string; contextWindow?: number }>> {
+    if (!this.opts.listModels) return [];
+    const cached = this.modelsCache.get(provider);
+    if (cached) return cached;
+    try {
+      const models = await this.opts.listModels(provider);
+      this.modelsCache.set(provider, models);
+      return models;
+    } catch {
+      return [];
+    }
+  }
+
   // ── 事件映射：DSH 事件 → 旧协议事件 ─────────────────────────────────────
 
   /** 由 plugin 在 ctx.on('session/event') 中调用。 */
@@ -368,7 +393,7 @@ export class OcServer {
       case "turn/start": {
         state.busy = true;
         state.updatedAt = Date.now();
-        const sel = this.selection() ?? { id: "model", providerID: "provider" };
+        const sel = this.sessionModel(state) ?? { id: "model", providerID: "provider" };
         const pending: PendingAssistant = {
           messageId: ocId("msg"),
           agent: state.currentAgent,
@@ -687,7 +712,7 @@ export class OcServer {
         if (!text.trim()) break;
         const messageId = ocId("msg");
         const now = Date.now();
-        const sel = this.selection();
+        const sel = this.sessionModel(state);
         const info: LegacyMessageInfo = {
           id: messageId,
           sessionID: state.id,
@@ -865,12 +890,12 @@ export class OcServer {
       return;
     }
     if (path === "/api/provider" && method === "GET") {
-      const provider = this.legacyProvider();
+      const provider = await this.legacyProvider();
       this.sendJson(res, 200, located(provider ? [provider] : [], this.opts.directory));
       return;
     }
     if (path === "/api/model" && method === "GET") {
-      const provider = this.legacyProvider();
+      const provider = await this.legacyProvider();
       const models = provider ? Object.values(provider.models).map((m) => ({ id: m.id, providerID: m.providerID, family: m.family, name: m.name })) : [];
       this.sendJson(res, 200, located(models, this.opts.directory));
       return;
@@ -932,9 +957,17 @@ export class OcServer {
           return;
         }
         if (typeof payload.agent === "string" && payload.agent in PERMISSION_AGENTS) state.currentAgent = payload.agent;
+        const reqModel = payload.model as { providerID?: string; modelID?: string } | undefined;
+        if (reqModel?.providerID && reqModel.modelID) {
+          state.currentModel = { providerID: reqModel.providerID, id: reqModel.modelID };
+        }
         const admitted = { messageID: ocId("msg"), delivery: "direct" };
         void this.opts
-          .onPrompt(text, { resumeSessionId: state.dshSessionId, preset: PERMISSION_AGENTS[state.currentAgent] }, { onSession: (dshId) => this.bindDshSession(state.id, dshId) })
+          .onPrompt(
+            text,
+            { resumeSessionId: state.dshSessionId, preset: PERMISSION_AGENTS[state.currentAgent], model: state.currentModel },
+            { onSession: (dshId) => this.bindDshSession(state.id, dshId) },
+          )
           .then((dshId) => {
             if (dshId) this.bindDshSession(state.id, dshId);
           });
@@ -1121,12 +1154,12 @@ export class OcServer {
       return;
     }
     if (path === "/config/providers" && method === "GET") {
-      const provider = this.legacyProvider();
+      const provider = await this.legacyProvider();
       this.sendJson(res, 200, { providers: provider ? [provider] : [], default: {} });
       return;
     }
     if (path === "/provider" && method === "GET") {
-      const provider = this.legacyProvider();
+      const provider = await this.legacyProvider();
       this.sendJson(res, 200, {
         all: provider ? [provider] : [],
         default: {},
@@ -1265,10 +1298,14 @@ export class OcServer {
         return;
       }
       if (method === "POST" && sub === "message") {
-        // 发送消息（旧协议）：body {agent?, parts: [{type:"text", text}]}
+        // 发送消息（旧协议）：body {agent?, model?, parts: [{type:"text", text}]}
         const state = this.sessions.get(sessionId) ?? this.getOrCreateSession(sessionId, this.opts.directory);
         const payload = body ? safeParse(body) : {};
         if (typeof payload.agent === "string" && payload.agent in PERMISSION_AGENTS) state.currentAgent = payload.agent;
+        const reqModel = payload.model as { providerID?: string; modelID?: string } | undefined;
+        if (reqModel?.providerID && reqModel.modelID) {
+          state.currentModel = { providerID: reqModel.providerID, id: reqModel.modelID };
+        }
         const parts = Array.isArray(payload.parts) ? payload.parts : [];
         const textPart = parts.find((p: unknown) => (p as { type?: string })?.type === "text") as { text?: string } | undefined;
         const text = textPart?.text ?? "";
@@ -1279,7 +1316,7 @@ export class OcServer {
         // 用户消息立即落库并推送
         const messageId = ocId("msg");
         const now = Date.now();
-        const sel = this.selection();
+        const sel = this.sessionModel(state);
         const info: LegacyMessageInfo = {
           id: messageId,
           sessionID: state.id,
@@ -1297,7 +1334,11 @@ export class OcServer {
         void this.opts
           .onPrompt(
             text,
-            { resumeSessionId: state.dshSessionId, preset: PERMISSION_AGENTS[state.currentAgent] },
+            {
+              resumeSessionId: state.dshSessionId,
+              preset: PERMISSION_AGENTS[state.currentAgent],
+              model: state.currentModel,
+            },
             { onSession: (dshId) => this.bindDshSession(state.id, dshId) },
           )
           .then((dshId) => {
@@ -1310,7 +1351,7 @@ export class OcServer {
         });
         // 响应占位 assistant 消息（TUI 期待 {info, parts}）
         const pendingId = ocId("msg");
-        const sel2 = this.selection();
+        const sel2 = this.sessionModel(state);
         const placeholder: LegacyMessageInfo = {
           id: pendingId,
           sessionID: state.id,
@@ -1428,7 +1469,7 @@ export class OcServer {
       directory: state.directory,
       title: state.title,
       agent: state.currentAgent,
-      model: this.selection(),
+      model: this.sessionModel(state),
       cost,
       tokens,
       created: state.createdAt,
@@ -1461,24 +1502,36 @@ export class OcServer {
     };
   }
 
-  private legacyProvider(): {
+  private async legacyProvider(): Promise<{
     id: string;
     name: string;
     source: string;
     env: string[];
     options: Record<string, unknown>;
     models: Record<string, LegacyModel>;
-  } | undefined {
+  } | undefined> {
     const sel = this.selection();
     if (!sel) return undefined;
-    const model = legacyModelFromV2({ id: sel.id, providerID: sel.providerID, name: sel.id }, this.modelContext);
+    // provider 的全部模型（模型选择窗口数据源）；无目录时回退当前模型
+    const catalog = await this.listModels(sel.providerID);
+    const models: Record<string, LegacyModel> = {};
+    if (catalog.length > 0) {
+      for (const m of catalog) {
+        models[m.id] = legacyModelFromV2(
+          { id: m.id, providerID: sel.providerID, name: m.name || m.id },
+          m.contextWindow ?? this.modelContext,
+        );
+      }
+    } else {
+      models[sel.id] = legacyModelFromV2({ id: sel.id, providerID: sel.providerID, name: sel.id }, this.modelContext);
+    }
     return {
       id: sel.providerID,
       name: sel.providerID,
       source: "config",
       env: [],
       options: {},
-      models: { [sel.id]: model },
+      models,
     };
   }
 

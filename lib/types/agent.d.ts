@@ -10,6 +10,11 @@ export interface AgentManagerOptions {
     preset?: string;
     /** 权限 preset（read-only / workspace-write / danger-full-access；来自 TUI 当前 agent） */
     permissionPreset?: string;
+    /** TUI 模型选择窗口切换的模型（覆盖 selection） */
+    model?: {
+        providerID: string;
+        id: string;
+    };
 }
 export interface OwnedAgent {
     agent: Agent;
@@ -33,6 +38,8 @@ export declare class AgentManager {
     private resolvePresetSetup;
     /** 组装 agent setup：模型选择 + preset 工具装配。 */
     private buildSetup;
+    /** 生效的模型选择：TUI 切换的模型优先，否则默认 selection。 */
+    private effectiveSelection;
     get current(): OwnedAgent | null;
     get agent(): Agent | undefined;
     /** 创建（或恢复）agent，返回是否新建。 */

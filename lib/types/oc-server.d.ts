@@ -1,6 +1,7 @@
 import type { Context } from "@deepseek-ai/cordis";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import type { ModelSelection } from "@deepseek-ai/dsh-agent";
+import { type ModelRef } from "./oc-proto.js";
 export interface OcServerOptions {
     directory: string;
     /** 监听端口（默认 0 = 随机） */
@@ -10,11 +11,19 @@ export interface OcServerOptions {
     onPrompt: (text: string, opts: {
         resumeSessionId?: string;
         preset?: string;
+        model?: ModelRef;
     }, hooks: {
         onSession: (dshSessionId: string) => void;
     }) => Promise<string | undefined>;
     /** 获取当前模型选择（provider/model） */
     getSelection: () => ModelSelection | undefined;
+    /** 列出某 provider 可用的全部模型（模型选择窗口的数据源） */
+    listModels?: (provider: string) => Promise<Array<{
+        id: string;
+        name: string;
+        description?: string;
+        contextWindow?: number;
+    }>>;
     /** 查询 DSH 会话投影（启动时重建历史） */
     listDshSessions?: () => Promise<Array<{
         sessionId: string;
@@ -33,6 +42,8 @@ export declare class OcServer {
     private modelCache;
     /** 最近一次请求头里的模型上下文窗口（maxTokens；供 limit.context 百分比计算） */
     private modelContext;
+    /** provider → 模型目录缓存（listModels 结果） */
+    private modelsCache;
     /** 历史会话重建 promise：会话列表/详情请求等待它完成，避免 hydrate 前返回空列表。 */
     private hydratePromise;
     constructor(ctx: Context, opts: OcServerOptions);
@@ -52,6 +63,10 @@ export declare class OcServer {
     /** 把 DSH 会话视图重建为 opencode 会话状态（进程内；ocSessionId 由 dshSessionId 稳定哈希）。 */
     private hydrateSession;
     private selection;
+    /** 会话模型：会话切换的模型优先，否则全局 selection。 */
+    private sessionModel;
+    /** 列出 provider 的全部模型（带缓存）。 */
+    private listModels;
     /** 由 plugin 在 ctx.on('session/event') 中调用。 */
     handleDshEvent(session: {
         id: string;
