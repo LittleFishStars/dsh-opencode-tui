@@ -1,6 +1,8 @@
 import Schema from "@deepseek-ai/schemastery";
 import type { Context } from "@deepseek-ai/cordis";
 import "@deepseek-ai/dsh-agent-default-model";
+import "@deepseek-ai/dsh-session-query";
+import "@deepseek-ai/dsh-session-persistence";
 declare const name = "dsh-opencode-tui";
 declare const inject: string[];
 declare const Config: Schema<Schemastery.ObjectS<{

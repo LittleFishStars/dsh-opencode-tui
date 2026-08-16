@@ -20,6 +20,8 @@ import type { Context } from "@deepseek-ai/cordis";
 import type { Session, SessionEvent } from "@deepseek-ai/dsh-session";
 import type { ApprovalOutcome, ApprovalRequest } from "@deepseek-ai/dsh-user-approval";
 import "@deepseek-ai/dsh-agent-default-model";
+import "@deepseek-ai/dsh-session-query";
+import "@deepseek-ai/dsh-session-persistence";
 import { AgentManager } from "./agent.js";
 import { OcServer } from "./oc-server.js";
 import { foldSessionMeta, projectEvents, type MessageView } from "./projection.js";

@@ -6,9 +6,6 @@
   "type": "module",
   "main": "lib/plugin.js",
   "types": "lib/types/plugin.d.ts",
-  "bin": {
-    "dsh-opencode-tui": "./bin/dsh-opencode-tui.js"
-  },
   "exports": {
     ".": {
       "types": "./lib/types/plugin.d.ts",
@@ -53,9 +50,6 @@
     "@deepseek-ai/dsh-user-approval": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-user-questions": "^0.1.0-rc.6",
     "@deepseek-ai/schemastery": "^3.18.1",
-    "@xterm/headless": "^6.0.0",
-    "node-pty": "^1.1.0",
-    "opencode-ai": "^1.18.18",
     "string-width": "^7.2.0"
   },
   "devDependencies": {
@@ -64,6 +58,6 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "smoke": "node --input-type=module -e \"import('./lib/plugin.js').then(()=>import('./lib/bridge.js')).then(()=>console.log('plugins load ok')).catch(e=>{console.error(e);process.exit(1)})\""
+    "smoke": "node --input-type=module -e \"import('./lib/plugin.js').then(()=>import('./lib/oc-server.js')).then(()=>console.log('plugins load ok')).catch(e=>{console.error(e);process.exit(1)})\""
   }
 }

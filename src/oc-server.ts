@@ -552,19 +552,19 @@ export class OcServer {
         });
         break;
       }
-      case "session/title": {
-        const data = event.data as { title?: string };
-        if (data.title) {
-          state.title = data.title;
-          this.pushSessionEvent(state, {
-            type: "session.updated",
-            properties: { info: this.legacySessionInfo(state) },
-          });
+      default: {
+        if (event.type === "session/title") {
+          const data = (event as unknown as { data?: { title?: string } }).data;
+          if (data?.title) {
+            state.title = data.title;
+            this.pushSessionEvent(state, {
+              type: "session.updated",
+              properties: { info: this.legacySessionInfo(state) },
+            });
+          }
         }
         break;
       }
-      default:
-        break;
     }
   }
 
