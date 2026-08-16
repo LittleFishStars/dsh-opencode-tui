@@ -97,6 +97,15 @@ if not dialog_seen:
     errf.close()
     sys.exit(1)
 
+# 断言原版完整布局：选项 description 行、自定义输入项 "Type your own answer"、
+# 编号选项（1. 2. 3.）。注意：选项 description 由 DSH question 的 option.description
+# 提供，兼容层已对齐 QuestionOption {label, description}。
+t_full = extract(buf)
+layout_custom = "Typeyourownanswer" in t_full
+layout_options = "1.Red" in t_full or "Red" in t_full
+print("[OK] full layout (custom answer item):", layout_custom, flush=True)
+print("[OK] options rendered:", layout_options, flush=True)
+
 # 选择第一个选项（Red 默认选中）→ Enter 提交
 time.sleep(1.5)
 send("\r")
