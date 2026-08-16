@@ -103,17 +103,47 @@ send("\r")
 print("[OK] pressed Enter (Red)", flush=True)
 
 # 验证 DSH 收到答案：会话文件里 agent 后续文本（"Red" 确认）
+# 注意：不用 glob（沙箱里 glob 通配扫描只见目录不见文件），用 os.walk 递归扫描。
+def find_session_files(root):
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        for fn in filenames:
+            if fn == "session.jsonl.zstd":
+                out.append(os.path.join(dirpath, fn))
+    return out
+
+def session_has_answer(f):
+    import json
+    out = subprocess.run(["zstd", "-d", "-c", f], capture_output=True).stdout.decode("utf-8", "replace")
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except Exception:
+            continue
+        # agent 收到答案后的回复：assistant 消息的 text 内容提到 Red / chose
+        if obj.get("type") != "assistant/message":
+            continue
+        msg = (obj.get("data") or {}).get("message") or {}
+        if msg.get("role") != "assistant":
+            continue
+        for block in msg.get("content") or []:
+            if block.get("type") == "text":
+                txt = block.get("text", "")
+                if ("Red" in txt or "chose" in txt) and "ask_user_question" not in txt:
+                    return True
+    return False
+
 deadline = time.time() + 40
 confirmed = False
 while time.time() < deadline:
     time.sleep(2)
-    files = glob.glob(os.path.join(ROOT, ".oc-sessions", "*", "*", "session.jsonl.zstd"))
+    files = find_session_files(os.path.join(ROOT, ".oc-sessions"))
     if not files:
         continue
-    out = subprocess.run(["zstd", "-d", "-c", files[0]], capture_output=True).stdout.decode("utf-8", "replace")
-    t = extract(buf)
-    # agent 回复提到 Red（确认收到答案）
-    if "Red" in t and "ask_user_question" not in t[-2500:]:
+    if any(session_has_answer(f) for f in files):
         confirmed = True
         print("[OK] answer delivered, agent confirmed Red", flush=True)
         print("TAIL:", repr(extract(buf)[-400:]), flush=True)

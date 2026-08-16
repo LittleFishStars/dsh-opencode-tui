@@ -87,15 +87,28 @@ else:
     print("[FAIL] no permission dialog", flush=True)
 
 # 等待审批结果：会话文件里出现 approval/decided allowed-once
+# 注意：不用 glob（沙箱里 glob 通配扫描只见目录不见文件），用 os.walk 递归扫描。
+def find_session_files(root):
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        for fn in filenames:
+            if fn == "session.jsonl.zstd":
+                out.append(os.path.join(dirpath, fn))
+    return out
+
 deadline = time.time() + 45
 while time.time() < deadline:
     time.sleep(2)
-    import glob
-    files = glob.glob(os.path.join(ROOT, ".oc-sessions", "*", "session.jsonl.zstd"))
+    files = find_session_files(os.path.join(ROOT, ".oc-sessions"))
     if not files:
         continue
-    out = subprocess.run(["zstd", "-d", "-c", files[0]], capture_output=True).stdout.decode("utf-8", "replace")
-    if "allowed-once" in out:
+    hit = False
+    for f in files:
+        out = subprocess.run(["zstd", "-d", "-c", f], capture_output=True).stdout.decode("utf-8", "replace")
+        if "allowed-once" in out:
+            hit = True
+            break
+    if hit:
         print("[OK] approval decided: allowed-once", flush=True)
         break
 else:
