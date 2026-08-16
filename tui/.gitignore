@@ -1,0 +1,12 @@
+# 依赖与构建产物
+node_modules/
+packages/*/node_modules/
+packages/cli/dist/
+.bun-install/
+.bun-tmp/
+
+# 日志与临时文件
+*.log
+*.err.log
+pdbg.log
+__pycache__/
