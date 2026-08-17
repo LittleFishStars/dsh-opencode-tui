@@ -527,9 +527,10 @@ export function viewsToLegacyMessages(
       out.push(currentAssistant);
     } else if (v.kind === "tool" && currentAssistant) {
       // 工具卡归入当前 assistant 消息的 parts
+      // id 用独立 prt_ part id（TUI 按 part id 排序渲染；DSH callId 保留在 callID）
       const t = v.tool;
       currentAssistant.parts.push({
-        id: t.id,
+        id: ocId("prt"),
         sessionID,
         messageID: currentAssistant.info.id,
         type: "tool",

@@ -167,6 +167,7 @@ export class DshEventMapper {
           if (!tool) {
             tool = {
               callID,
+              partId: ocId("prt"),
               name: chunk.name ?? "tool",
               state: { status: "running" },
               inputArgs: "",
@@ -234,6 +235,7 @@ export class DshEventMapper {
         if (!tool) {
           tool = {
             callID,
+            partId: ocId("prt"),
             name,
             state: { status: "running" },
             inputArgs: "",
@@ -538,9 +540,10 @@ export class DshEventMapper {
     }));
     // 消息流里的提问工具卡（原版 ask_user_question 工具："Asking questions..." → "Asked N questions"）
     const toolCallId = `call_question_${Date.now().toString(36)}`;
+    const toolPartId = ocId("prt");
     const pending = state.pending;
     const toolPart: LegacyToolPart = {
-      id: toolCallId,
+      id: toolPartId,
       sessionID: state.id,
       messageID: pending?.messageId ?? state.messages.at(-1)?.info.id ?? "",
       type: "tool",
@@ -556,6 +559,7 @@ export class DshEventMapper {
     if (pending) {
       pending.tools.set(toolCallId, {
         callID: toolCallId,
+        partId: toolPartId,
         name: "question",
         state: toolPart.state,
         inputArgs: "",
@@ -613,7 +617,7 @@ export class DshEventMapper {
   /** 工具 part 构造（DSH 工具状态 → opencode tool part）。 */
   private toolPart(state: SessionState, pending: PendingAssistant, tool: PendingTool): LegacyToolPart {
     return {
-      id: tool.callID,
+      id: tool.partId,
       sessionID: state.id,
       messageID: pending.messageId,
       type: "tool",

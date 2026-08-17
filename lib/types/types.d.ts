@@ -137,7 +137,11 @@ export interface PendingReasoningBlock {
     end?: number;
 }
 export interface PendingTool {
+    /** DSH 工具调用 id（call_…；保留在 part.callID 供关联） */
     callID: string;
+    /** part id（prt_ 前缀，独立于 callID：TUI 按 part id 排序渲染，
+     *  工具卡必须与文本/思考按真实时间顺序交错） */
+    partId: string;
     name: string;
     state: LegacyToolState;
     inputArgs: string;
