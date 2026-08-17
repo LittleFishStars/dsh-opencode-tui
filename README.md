@@ -8,26 +8,26 @@ thinking 折叠、鼠标与主题全部由 opencode 原版提供），Agent/会�
 
 opencode 的 TUI 是纯 HTTP 客户端：它通过一组 REST 端点（旧路径 `/session`、
 `/config/providers`、`/global/event` 等 + v2 `/api/*`）与 SSE 事件流与 server 通信。
-本仓库实现了一个 **opencode server 协议兼容层**（`src/oc-server.ts`），跑在 dsh
-插件进程内，把 TUI 的请求映射到 dsh 的 agent/会话；TUI 二进制则是 opencode 官方
-仓库（anomalyco/opencode，dev 分支）界面代码的**精简版**（`tui/`）：只保留 TUI
-及其直接依赖（tui/ui/plugin/sdk/core/schema/llm 等包），并裁剪 CLI 为仅直连
-模式；内置插件（侧边栏、提问对话框）与 `OPENCODE_URL` 直连由 fork 的
-`packages/cli/src/tui.ts` 提供。
+本仓库实现了一个 **opencode server 协议兼容层**，跑在 dsh 插件进程内，把 TUI 的
+请求映射到 dsh 的 agent/会话；TUI 二进制则是 opencode 官方仓库（anomalyco/opencode，
+dev 分支）界面代码的**精简版**（`tui/`）：只保留 TUI 及其直接依赖
+（tui/ui/plugin/sdk/core/schema/llm 等包），并裁剪 CLI 为仅直连模式；品牌已改为
+DSH（首页 Logo、侧边栏、提示与退出画面）。
 
 ```
 ┌──────────────────────────────────────────────────────────┐
 │ dsh --profile dsh-opencode-tui（Node 进程）               │
 │  插件 plugin.ts：                                         │
-│    ├─ src/oc-server.ts（opencode 协议兼容层，HTTP+SSE）   │
-│    │    ├─ 旧路径：/session /session/:id/message          │
-│    │    │          /config/providers /global/event …      │
-│    │    └─ v2：/api/health /api/session /api/event …      │
+│    ├─ src/oc-server.ts（薄主类：HTTP 生命周期+路由分发）  │
+│    │    ├─ src/session-store.ts（会话存储/SSE/模型选择）  │
+│    │    ├─ src/event-mapper.ts（DSH 事件→opencode 事件）  │
+│    │    ├─ src/routes/（api.ts v2 / legacy.ts 旧协议）    │
+│    │    └─ src/{types,projection,oc-proto,http-util}.ts   │
 │    └─ src/agent.ts（AgentManager → dsh agent 会话）       │
 └──────────────────────┬─────────────────────────────────────┘
                        │ OPENCODE_URL=http://127.0.0.1:<port>
 ┌──────────────────────▼─────────────────────────────────────┐
-│ tui/ lildax（opencode 界面精简版，直连兼容层）              │
+│ tui/ lildax（opencode 界面精简版，DSH 品牌，直连兼容层）    │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -93,11 +93,17 @@ DSH `approval/request` → `permission.asked` 事件 → TUI 权限对话框 →
 `scripts/` 下的 pty 测试（python + term_responder 应答器）：
 - `pty-test13.py`：文本回复端到端（发送 → DSH agent 回复 → TUI 渲染）
 - `pty-test14.py`：工具调用端到端（bash → 输出渲染）
-- `pty-test16.py`：审批端到端（写 /tmp 触发 approval → TUI 对话框 → Enter 批准 → 工具执行）
+- `pty-test15.py` / `pty-test16.py`：审批对话框（触发 → 对话框 → Enter 批准 → 工具执行）
+- `pty-test18.py`：提问对话框完整流程（agent askUserQuestion → 选择 → DSH 收到答案）
+- `pty-test19.py`：Tab 切换权限模式 agent（read-only / workspace-write / full-access）
+- `pty-test20.py`：工具轮多思考块重启后保持独立（hydrate 回归）
+- `pty-test22.py`：会话删除（DELETE /session/:id → 列表/磁盘工件移除）
+- `test-blocks-*.mjs` / `test-tool-state.mjs` / `test-user-dedup.mjs`：兼容层单元测试
 - `term_responder.py`：OpenTUI 终端查询应答（`threaded=False` 时同步模式，
   与捕获主循环共用 fd，避免多 reader 竞争死锁）
+- `tools/`：调试工具（miniterm 屏幕模拟、extract-visible 文本提取、record-server 等）
 
 注意：
-- fork serve 的 db 被 kill -9 损坏后 TUI 会数据加载失败 → 测试前清 db/state 目录
-- OpenTUI 的 flex 布局在部分终端下不渲染（`home.tsx` 已用简化布局规避）
+- 沙箱 pty 的渲染限制：侧边栏区域、部分 flex 布局不渲染 → 屏幕断言优先用
+  会话文件 / HTTP 响应（如 test20 用 GET /session/:id/message 验证 reasoning part）
 - 兼容层请求日志走 stderr（`[oc-server] ...`），诊断用
