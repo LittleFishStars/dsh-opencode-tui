@@ -50,7 +50,7 @@ export interface AssistantMessageView {
   thinking: string;
   /** 内容块（text/reasoning 交错出现，按事件顺序排列；思考/输出交替时
    *  保持 part 顺序，多次思考各自独立不合并）。旧会话无此字段时回退 thinking/text。 */
-  contentBlocks?: Array<{ kind: "text" | "reasoning"; key: string; text: string }>;
+  contentBlocks?: Array<{ kind: "text" | "reasoning"; key: string; text: string; start?: number; end?: number }>;
   /** assistant/message 已落地（模型回复完成，可能仍在跑工具） */
   assembled: boolean;
   /** turn/end 已到达 */
@@ -151,7 +151,20 @@ export function applyEvent(messages: MessageView[], event: SessionEvent): boolea
           updated[updated.length - 1] = { ...last, text: last.text + text };
           return { ...card, text: kind === "text" ? card.text + text : card.text, thinking: kind === "reasoning" ? card.thinking + text : card.thinking, contentBlocks: updated, seq: event.seq };
         }
-        return { ...card, text: kind === "text" ? card.text + text : card.text, thinking: kind === "reasoning" ? card.thinking + text : card.thinking, contentBlocks: [...blocks, { kind, key, text }], seq: event.seq };
+        // 新块：记录 start 时间（每块自己的时间，hydrate 后思考时长不被整轮拉长）
+        return { ...card, text: kind === "text" ? card.text + text : card.text, thinking: kind === "reasoning" ? card.thinking + text : card.thinking, contentBlocks: [...blocks, { kind, key, text, start: event.time }], seq: event.seq };
+      };
+      // 块结束：更新对应块的 end 时间（block-end 事件携带 index）
+      const closeBlock = (card: AssistantMessageView, kind: "text" | "reasoning"): AssistantMessageView => {
+        const blocks = card.contentBlocks ?? [];
+        const key = blockKey(chunk.index);
+        const idx = blocks.findLastIndex((b: { kind: string; key: string }) => b.kind === kind && b.key === key) ?? -1;
+        if (idx === -1) return card;
+        const updated = [...blocks];
+        const target = updated[idx];
+        if (!target) return card;
+        updated[idx] = { ...target, end: event.time };
+        return { ...card, contentBlocks: updated, seq: event.seq };
       };
       const last = messages[messages.length - 1];
       // 只追加到"当前"assistant 卡片（最后一个 assistant 且未 assembled）
@@ -164,9 +177,17 @@ export function applyEvent(messages: MessageView[], event: SessionEvent): boolea
           messages[messages.length - 1] = appendBlock(last, "reasoning", chunk.text);
           return true;
         }
-        if (chunk.type === "block-end" && chunk.text) {
-          // 兼容直接把文本放在 block-end 的适配器
-          messages[messages.length - 1] = appendBlock(last, "text", chunk.text);
+        if (chunk.type === "block-end") {
+          // 关闭对应块（记录 end 时间）；兼容直接把文本放在 block-end 的适配器
+          const blockType = (chunk as { block?: { type?: string } }).block?.type;
+          let card = last;
+          if (blockType === "reasoning") {
+            card = closeBlock(last, "reasoning");
+          } else if (blockType === "text") {
+            card = closeBlock(last, "text");
+          }
+          if (chunk.text) card = appendBlock(card, "text", chunk.text);
+          messages[messages.length - 1] = card;
           return true;
         }
       } else if (chunk.type === "text-delta" && chunk.text) {
@@ -178,7 +199,7 @@ export function applyEvent(messages: MessageView[], event: SessionEvent): boolea
           time: event.time,
           text: chunk.text,
           thinking: "",
-          contentBlocks: [{ kind: "text", key: blockKey(chunk.index), text: chunk.text }],
+          contentBlocks: [{ kind: "text", key: blockKey(chunk.index), text: chunk.text, start: event.time }],
           assembled: false,
           finished: false,
         });
@@ -191,7 +212,7 @@ export function applyEvent(messages: MessageView[], event: SessionEvent): boolea
           time: event.time,
           text: "",
           thinking: chunk.text,
-          contentBlocks: [{ kind: "reasoning", key: blockKey(chunk.index), text: chunk.text }],
+          contentBlocks: [{ kind: "reasoning", key: blockKey(chunk.index), text: chunk.text, start: event.time }],
           assembled: false,
           finished: false,
         });
@@ -517,12 +538,19 @@ export function viewsToLegacyMessages(
       // 这里按"块在事件流中的顺序"生成 id——文本块和思考块交替出现时用
       // 统一的递增 id 保证字典序 = 真实顺序。
       // 内容块（text/reasoning 交错，按事件顺序）→ 各自独立 part。
+      // 每块用自己的 start/end 时间（思考时长不被整轮拉长）；旧数据无块时间时
+      // 回退 v.time / v.endedAt。
       // 旧会话无 contentBlocks 时回退：thinking + text（先后未知，text 在前兼容历史）
-      const blocks: Array<{ kind: "text" | "reasoning"; text: string }> = v.contentBlocks && v.contentBlocks.length > 0
-        ? v.contentBlocks.filter((b) => b.text).map((b) => ({ kind: b.kind, text: b.text }))
-        : [...(v.text ? [{ kind: "text" as const, text: v.text }] : []), ...(v.thinking ? [{ kind: "reasoning" as const, text: v.thinking }] : [])];
+      const blocks: Array<{ kind: "text" | "reasoning"; text: string; start: number; end: number }> = v.contentBlocks && v.contentBlocks.length > 0
+        ? v.contentBlocks.filter((b) => b.text).map((b) => ({
+            kind: b.kind,
+            text: b.text,
+            start: b.start ?? v.time,
+            end: b.end ?? v.endedAt ?? v.time,
+          }))
+        : [...(v.text ? [{ kind: "text" as const, text: v.text }] : []), ...(v.thinking ? [{ kind: "reasoning" as const, text: v.thinking }] : [])].map((b) => ({ ...b, start: v.time, end: v.endedAt ?? v.time }));
       for (const block of blocks) {
-        parts.push({ id: ocId("prt"), sessionID, messageID: v.id, type: block.kind, text: block.text, time: { start: v.time, end: v.endedAt } });
+        parts.push({ id: ocId("prt"), sessionID, messageID: v.id, type: block.kind, text: block.text, time: { start: block.start, end: block.end } });
       }
       currentAssistant = { info, parts };
       out.push(currentAssistant);

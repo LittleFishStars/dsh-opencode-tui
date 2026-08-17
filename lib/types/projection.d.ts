@@ -52,6 +52,8 @@ export interface AssistantMessageView {
         kind: "text" | "reasoning";
         key: string;
         text: string;
+        start?: number;
+        end?: number;
     }>;
     /** assistant/message 已落地（模型回复完成，可能仍在跑工具） */
     assembled: boolean;

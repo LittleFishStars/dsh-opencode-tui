@@ -99,13 +99,14 @@ export class DshEventMapper {
         const chunk = data.chunk;
         if (!chunk) break;
         const blockKey = (index?: number): string => `${data.step ?? 0}:${index ?? 0}`;
+        const eventTime = event.time;
         if (chunk.type === "text-delta" && chunk.text) {
           // 文本也按块拆分：part id 分配顺序 = 内容出现顺序（TUI 按 id 排序渲染，
           // 思考/输出交替时必须保证 text part 排在对应 reasoning part 之后）
           const key = blockKey(chunk.index);
           let block = pending.textBlocks.get(key);
           if (!block) {
-            block = { partId: ocId("prt"), text: "", start: Date.now() };
+            block = { partId: ocId("prt"), text: "", start: eventTime };
             pending.textBlocks.set(key, block);
           }
           block.text += chunk.text;
@@ -131,7 +132,7 @@ export class DshEventMapper {
           const key = blockKey(chunk.index);
           let block = pending.reasoningBlocks.get(key);
           if (!block) {
-            block = { partId: ocId("prt"), text: "", start: Date.now() };
+            block = { partId: ocId("prt"), text: "", start: eventTime };
             pending.reasoningBlocks.set(key, block);
           }
           block.text += chunk.text;
@@ -154,12 +155,12 @@ export class DshEventMapper {
           if (chunk.blockType === "reasoning") {
             const key = blockKey(chunk.index);
             if (!pending.reasoningBlocks.has(key)) {
-              pending.reasoningBlocks.set(key, { partId: ocId("prt"), text: "", start: Date.now() });
+              pending.reasoningBlocks.set(key, { partId: ocId("prt"), text: "", start: eventTime });
             }
           } else if (chunk.blockType === "text") {
             const key = blockKey(chunk.index);
             if (!pending.textBlocks.has(key)) {
-              pending.textBlocks.set(key, { partId: ocId("prt"), text: "", start: Date.now() });
+              pending.textBlocks.set(key, { partId: ocId("prt"), text: "", start: eventTime });
             }
           }
         } else if (chunk.type === "tool-call-delta") {
@@ -184,7 +185,7 @@ export class DshEventMapper {
         } else if (chunk.type === "block-end") {
           // 块结束：reasoning 推最终 part 状态（time.end 停止 spinner 并变灰）
           const block = chunk.block;
-          const now = Date.now();
+          const now = eventTime;
           if (block?.type === "reasoning") {
             const key = blockKey(chunk.index);
             const rb = pending.reasoningBlocks.get(key);
