@@ -263,18 +263,52 @@ export class DshEventMapper {
         const pending = state.pending;
         if (!pending) break;
         const data = event.data as {
-          message?: { content?: Array<{ type?: string; text?: string }> };
+          message?: {
+            source?: { callId?: string };
+            content?: Array<{
+              type?: string;
+              callId?: string;
+              toolCallId?: string;
+              isError?: boolean;
+              content?: Array<{ type?: string; text?: string }> | string;
+              text?: string;
+            }>;
+          };
           error?: { name?: string; code?: string };
         };
         const message = data.message;
-        const callID = (message?.content?.[0] as { callId?: string } | undefined)?.callId ?? "call_unknown";
-        const resultText = message ? toolResultText(message) : "";
+        if (!message) break;
+        // DSH tool/result 的 message.content[0] 是 {type:"tool-result", toolCallId,
+        // content:[{type:"text",text}], isError}；callId 也可能在 source.callId
+        const first = message.content?.[0];
+        const callID =
+          first?.callId ??
+          first?.toolCallId ??
+          message.source?.callId ??
+          (message.content?.find((c) => c.callId || c.toolCallId) as { callId?: string; toolCallId?: string } | undefined)?.callId ??
+          (message.content?.find((c) => c.callId || c.toolCallId) as { callId?: string; toolCallId?: string } | undefined)?.toolCallId ??
+          "call_unknown";
+        // 结果文本：优先 tool-result 块的嵌套 content，回退顶层 text 块
+        const resultText = (() => {
+          if (first?.type === "tool-result") {
+            if (Array.isArray(first.content)) {
+              return first.content
+                .filter((b) => b.type === "text" && typeof b.text === "string")
+                .map((b) => b.text as string)
+                .join("");
+            }
+            if (typeof first.content === "string") return first.content;
+            return first.text ?? "";
+          }
+          return toolResultText(message);
+        })();
         const tool = pending.tools.get(callID);
         if (tool) {
+          const failed = Boolean(data.error) || Boolean(first?.isError) || resultText.startsWith("Error:");
           // 对齐原版 ToolState：completed 必填 output + title；Shell 的展开
           // 依赖 state.metadata.output（点击展开工具输出），Execute 读 state.output
           const prevMeta = tool.state.metadata ?? {};
-          tool.state = data.error || resultText.startsWith("Error:")
+          tool.state = failed
             ? { ...tool.state, status: "error", error: resultText || data.error?.name || "tool error", metadata: { ...prevMeta, output: resultText } }
             : {
                 ...tool.state,

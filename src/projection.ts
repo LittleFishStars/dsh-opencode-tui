@@ -287,17 +287,50 @@ export function applyEvent(messages: MessageView[], event: SessionEvent): boolea
     }
     case "tool/result": {
       const data = event.data as {
-        message?: { content?: Array<{ type?: string; text?: string }> };
+        message?: {
+          source?: { callId?: string };
+          content?: Array<{
+            type?: string;
+            callId?: string;
+            toolCallId?: string;
+            isError?: boolean;
+            content?: Array<{ type?: string; text?: string }> | string;
+            text?: string;
+          }>;
+        };
         error?: { name?: string; code?: string };
       };
-      const callId = (data.message?.content?.[0] as { callId?: string } | undefined)?.callId;
-      const resultText = data.message ? toolResultText(data.message) : "";
+      const message = data.message;
+      // DSH tool/result 的 message.content[0] 是 {type:"tool-result", toolCallId,
+      // content:[{type:"text",text}], isError}；callId 也可能在 source.callId
+      const first = message?.content?.[0];
+      const callId =
+        first?.callId ??
+        first?.toolCallId ??
+        message?.source?.callId ??
+        (message?.content?.find((c) => c.callId || c.toolCallId) as { callId?: string; toolCallId?: string } | undefined)?.callId ??
+        (message?.content?.find((c) => c.callId || c.toolCallId) as { callId?: string; toolCallId?: string } | undefined)?.toolCallId;
+      // 结果文本：优先 tool-result 块的嵌套 content，回退顶层 text 块
+      const resultText = (() => {
+        if (first?.type === "tool-result") {
+          if (Array.isArray(first.content)) {
+            return first.content
+              .filter((b) => b.type === "text" && typeof b.text === "string")
+              .map((b) => b.text as string)
+              .join("");
+          }
+          if (typeof first.content === "string") return first.content;
+          return first.text ?? "";
+        }
+        return message ? toolResultText(message) : "";
+      })();
+      const failed = Boolean(data.error) || Boolean(first?.isError);
       // 反向找最后一条同 callId 的 tool 卡片
       for (let i = messages.length - 1; i >= 0; i--) {
         const m = messages[i];
         if (m?.kind === "tool" && m.tool.id === callId) {
-          const error = data.error
-            ? { name: data.error.name ?? "ToolError", code: data.error.code ?? "UNKNOWN" }
+          const error = data.error || failed
+            ? { name: data.error?.name ?? "ToolError", code: data.error?.code ?? "UNKNOWN" }
             : undefined;
           messages[i] = {
             ...m,
@@ -305,7 +338,7 @@ export function applyEvent(messages: MessageView[], event: SessionEvent): boolea
             tool: {
               ...m.tool,
               status: error ? "error" : "done",
-              result: data.message ? toolResultText(data.message) : "",
+              result: resultText,
               error,
               endedAt: event.time,
             },
