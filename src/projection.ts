@@ -9,6 +9,7 @@
  */
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import { ocId } from "./oc-proto.js";
+import { toolDisplayName } from "./tool-display.js";
 import type { LegacyMessage, LegacyMessageInfo, LegacyPart } from "./types.js";
 
 export interface ToolCallView {
@@ -529,6 +530,8 @@ export function viewsToLegacyMessages(
       // 工具卡归入当前 assistant 消息的 parts
       // id 用独立 prt_ part id（TUI 按 part id 排序渲染；DSH callId 保留在 callID）
       const t = v.tool;
+      const result = t.result ?? "";
+      const completed = t.status === "done";
       currentAssistant.parts.push({
         id: ocId("prt"),
         sessionID,
@@ -536,8 +539,11 @@ export function viewsToLegacyMessages(
         type: "tool",
         tool: t.name,
         state: {
-          status: t.status === "error" ? "error" : t.status === "done" ? "completed" : "running",
+          status: t.status === "error" ? "error" : completed ? "completed" : "running",
           input: safeParseToolArgs(t.arguments),
+          // completed 必填 output+title；metadata.output 供 Shell 点击展开
+          ...(completed ? { output: result, title: toolDisplayName(t.name) } : {}),
+          metadata: { ...(t.result ? { output: result } : {}) },
           content: t.result ? [{ type: "text", text: t.result }] : [],
           result: t.result,
           error: t.error ? t.error.name : undefined,

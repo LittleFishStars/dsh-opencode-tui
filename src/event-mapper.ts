@@ -14,6 +14,7 @@ import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import { ocId, type ModelRef } from "./oc-proto.js";
 import type { SessionStore } from "./session-store.js";
 import { FILE_TOOL_NAMES, type LegacyMessageInfo, type LegacyToolPart, type PendingAssistant, type PendingTool, type SessionState } from "./types.js";
+import { toolDisplayName } from "./tool-display.js";
 import { ocLog } from "./logging.js";
 
 export interface DshEventMapperOptions {
@@ -269,9 +270,20 @@ export class DshEventMapper {
         const resultText = message ? toolResultText(message) : "";
         const tool = pending.tools.get(callID);
         if (tool) {
+          // 对齐原版 ToolState：completed 必填 output + title；Shell 的展开
+          // 依赖 state.metadata.output（点击展开工具输出），Execute 读 state.output
+          const prevMeta = tool.state.metadata ?? {};
           tool.state = data.error || resultText.startsWith("Error:")
-            ? { ...tool.state, status: "error", error: resultText || data.error?.name || "tool error" }
-            : { ...tool.state, status: "completed", content: [{ type: "text", text: resultText }], result: resultText };
+            ? { ...tool.state, status: "error", error: resultText || data.error?.name || "tool error", metadata: { ...prevMeta, output: resultText } }
+            : {
+                ...tool.state,
+                status: "completed",
+                output: resultText,
+                title: toolDisplayName(tool.name),
+                content: [{ type: "text", text: resultText }],
+                result: resultText,
+                metadata: { ...prevMeta, output: resultText },
+              };
           this.store.pushSessionEvent(state, {
             type: "message.part.updated",
             properties: { part: this.toolPart(state, pending, tool) },

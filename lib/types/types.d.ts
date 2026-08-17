@@ -40,7 +40,11 @@ export interface LegacyToolState {
     content?: unknown[];
     result?: unknown;
     error?: string;
-    /** 工具完成后的附加信息（question 的 answers 等） */
+    /** 工具输出（对齐原版 ToolStateCompleted.output；Execute 等组件读取） */
+    output?: string;
+    /** 工具标题（对齐原版 ToolStateCompleted.title） */
+    title?: string;
+    /** 工具完成后的附加信息（Shell 点击展开读 metadata.output；question 的 answers 等） */
     metadata?: Record<string, unknown>;
 }
 export interface LegacyToolPart {
