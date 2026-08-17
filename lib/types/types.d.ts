@@ -101,8 +101,9 @@ export interface PendingAssistant {
     agent: string;
     model: ModelRef;
     startedAt: number;
-    text: string;
-    textPartId: string;
+    /** 所有文本块按创建顺序排列（文本也分块：思考与输出交替时 part 顺序必须
+     *  反映真实时间顺序，TUI 按 part id 字典序渲染） */
+    textBlocks: Map<string, PendingTextBlock>;
     /** 思考块：key = `${step}:${index}`（DSH 每 step 的 chunk 索引从 0 重新编号）。
      *  一次"思考→输出→再思考→再输出"会产生多个独立块，各自有独立 part id，
      *  避免 TUI 把多次思考合并、且前一块的 completed 状态被后续 delta 覆盖。 */
@@ -118,6 +119,14 @@ export interface PendingAssistant {
         cacheRead: number;
         cacheWrite: number;
     };
+}
+/** 一个文本块（text part 的构建态）。 */
+export interface PendingTextBlock {
+    /** part id（每块独立；id 分配顺序 = 内容出现顺序） */
+    partId: string;
+    text: string;
+    start: number;
+    end?: number;
 }
 /** 一个思考块（reasoning part 的构建态）。 */
 export interface PendingReasoningBlock {

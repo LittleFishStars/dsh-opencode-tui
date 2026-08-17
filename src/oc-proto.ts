@@ -9,8 +9,10 @@ import { createHash } from "node:crypto";
 
 let seq = 0;
 
-/** 生成 opencode 风格 id：ses_ / msg_ / evt_ 前缀 + 递增 base36（保证排序稳定）。 */
-export function ocId(prefix: "ses" | "msg" | "evt" | "text" | "reasoning" | "call"): string {
+/** 生成 opencode 风格 id：ses_ / msg_ / evt_ / prt_ 前缀 + 递增 base36（保证排序稳定）。
+ *  part 统一用 "prt" 前缀（对齐原版 PartID）：TUI 按 part id 字典序排序渲染，
+ *  若 text/reasoning 用不同前缀会导致排序错乱（reasoning 恒排在 text 前）。 */
+export function ocId(prefix: "ses" | "msg" | "evt" | "prt" | "call"): string {
   seq += 1;
   return `${prefix}_${Date.now().toString(36)}${seq.toString(36).padStart(6, "0")}`;
 }

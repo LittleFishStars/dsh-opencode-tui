@@ -1,4 +1,4 @@
-// 单元验证：hydrate 路径（projection）两段思考 → 两个独立 reasoning part
+// 单元验证：hydrate 路径 parts 顺序（思考1→输出1→思考2→输出2）
 import { projectEvents, viewsToLegacyMessages } from "../lib/projection.js";
 
 const t = Date.now();
@@ -20,16 +20,13 @@ const events = [
   { type: "turn/end", seq: 15, time: t, data: { reason: { kind: "completed" } } },
 ];
 const views = projectEvents(events);
-const assistant = views.filter((v) => v.kind === "assistant");
-console.log("assistant cards:", assistant.length);
-const msgs = viewsToLegacyMessages("ses_h", assistant, undefined, "workspace-write");
-const reasoning = msgs[0].parts.filter((p) => p.type === "reasoning");
-console.log("reasoning parts:", reasoning.length);
-for (const r of reasoning) console.log(" -", JSON.stringify({ text: r.text, hasEnd: r.time.end !== undefined }));
-const ok = reasoning.length === 2
-  && reasoning[0].text === "First thinking"
-  && reasoning[1].text === "Second thinking"
-  && reasoning[0].id !== reasoning[1].id
-  && reasoning[0].time.end !== undefined && reasoning[1].time.end !== undefined;
+const msgs = viewsToLegacyMessages("ses_h", views.filter((v) => v.kind === "assistant"), undefined, "workspace-write");
+// hydrate 时 TUI 按 part id 排序（session.sync 的 parts 合并后按数组序渲染，
+// 但为一致这里也模拟 TUI 排序）
+const sorted = [...msgs[0].parts].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+const seq = sorted.map((p) => `${p.type}:${p.text}`);
+console.log("parts (TUI 排序后):", seq);
+const expected = ["reasoning:First thinking", "text:First output", "reasoning:Second thinking", "text:Second output"];
+const ok = seq.length === 4 && seq.every((s, i) => s === expected[i]);
 console.log(ok ? "PASS" : "FAIL");
 process.exit(ok ? 0 : 1);

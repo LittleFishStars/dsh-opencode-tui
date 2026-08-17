@@ -71,7 +71,7 @@ export async function handleLegacySession(
         agent: state.currentAgent,
         model: { providerID: sel?.providerID ?? "provider", modelID: sel?.id ?? "model" },
       };
-      const partId = ocId("text");
+      const partId = ocId("prt");
       state.messages.push({
         info,
         parts: [{ id: partId, sessionID: state.id, messageID: messageId, type: "text", text, time: { start: now, end: now } }],
