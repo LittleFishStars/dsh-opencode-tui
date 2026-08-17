@@ -44,8 +44,10 @@ export interface AssistantMessageView {
     time: number;
     /** 流式累积/最终文本 */
     text: string;
-    /** 思考（reasoning）文本 */
+    /** 思考（reasoning）文本（旧字段，全部块拼接；新代码用 thinkingBlocks） */
     thinking: string;
+    /** 思考块：key = `${step}:${index}` → 块文本。多次思考各自独立，不合并。 */
+    thinkingBlocks?: Map<string, string>;
     /** assistant/message 已落地（模型回复完成，可能仍在跑工具） */
     assembled: boolean;
     /** turn/end 已到达 */

@@ -103,8 +103,10 @@ export interface PendingAssistant {
     startedAt: number;
     text: string;
     textPartId: string;
-    reasoning: string;
-    reasoningPartId: string;
+    /** 思考块：key = `${step}:${index}`（DSH 每 step 的 chunk 索引从 0 重新编号）。
+     *  一次"思考→输出→再思考→再输出"会产生多个独立块，各自有独立 part id，
+     *  避免 TUI 把多次思考合并、且前一块的 completed 状态被后续 delta 覆盖。 */
+    reasoningBlocks: Map<string, PendingReasoningBlock>;
     tools: Map<string, PendingTool>;
     finish?: string;
     endedAt?: number;
@@ -116,6 +118,14 @@ export interface PendingAssistant {
         cacheRead: number;
         cacheWrite: number;
     };
+}
+/** 一个思考块（reasoning part 的构建态）。 */
+export interface PendingReasoningBlock {
+    /** part id（每块独立） */
+    partId: string;
+    text: string;
+    start: number;
+    end?: number;
 }
 export interface PendingTool {
     callID: string;

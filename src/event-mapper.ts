@@ -60,8 +60,7 @@ export class DshEventMapper {
           startedAt: Date.now(),
           text: "",
           textPartId: ocId("text"),
-          reasoning: "",
-          reasoningPartId: ocId("reasoning"),
+          reasoningBlocks: new Map(),
           tools: new Map(),
         };
         state.pending = pending;
@@ -93,9 +92,13 @@ export class DshEventMapper {
       case "assistant/chunk": {
         const pending = state.pending;
         if (!pending) break;
-        const data = event.data as { chunk?: { type?: string; text?: string; id?: string; name?: string; arguments?: string } };
+        const data = event.data as {
+          step?: number;
+          chunk?: { type?: string; text?: string; id?: string; name?: string; arguments?: string; index?: number; blockType?: string; block?: { type?: string } };
+        };
         const chunk = data.chunk;
         if (!chunk) break;
+        const blockKey = (index?: number): string => `${data.step ?? 0}:${index ?? 0}`;
         if (chunk.type === "text-delta" && chunk.text) {
           pending.text += chunk.text;
           const msg = this.store.findMessage(state, pending.messageId);
@@ -116,20 +119,36 @@ export class DshEventMapper {
             },
           });
         } else if (chunk.type === "reasoning-delta" && chunk.text) {
-          pending.reasoning += chunk.text;
+          // 追加到当前 step 的思考块（每块独立 part id，多次思考不合并）
+          const key = blockKey(chunk.index);
+          let block = pending.reasoningBlocks.get(key);
+          if (!block) {
+            block = { partId: ocId("reasoning"), text: "", start: Date.now() };
+            pending.reasoningBlocks.set(key, block);
+          }
+          block.text += chunk.text;
           this.store.pushSessionEvent(state, {
             type: "message.part.updated",
             properties: { part: {
-              id: pending.reasoningPartId,
+              id: block.partId,
               sessionID: state.id,
               messageID: pending.messageId,
               type: "reasoning",
-              text: pending.reasoning,
-              time: { start: pending.startedAt },
+              text: block.text,
+              time: { start: block.start },
             },
               delta: chunk.text,
             },
           });
+        } else if (chunk.type === "block-start") {
+          // 块边界（reasoning/text/tool-call）：reasoning 块在首个 delta 时创建，
+          // 这里预创建以记录准确的 start 时间
+          if (chunk.blockType === "reasoning") {
+            const key = blockKey(chunk.index);
+            if (!pending.reasoningBlocks.has(key)) {
+              pending.reasoningBlocks.set(key, { partId: ocId("reasoning"), text: "", start: Date.now() });
+            }
+          }
         } else if (chunk.type === "tool-call-delta") {
           const callID = chunk.id ?? "call_unknown";
           let tool = pending.tools.get(callID);
@@ -149,37 +168,29 @@ export class DshEventMapper {
           }
           tool.inputArgs += chunk.arguments ?? "";
         } else if (chunk.type === "block-end") {
-          // reasoning/text 块结束：推最终 part 状态（time.end 停止 spinner 并变灰）
-          const block = (chunk as { block?: { type?: string } }).block;
+          // 块结束：reasoning 推最终 part 状态（time.end 停止 spinner 并变灰）；
+          // text 保持流式（TUI 的 TextPart 不依赖 time.end）
+          const block = chunk.block;
           const now = Date.now();
-          if (block?.type === "reasoning" && pending.reasoning) {
-            this.store.pushSessionEvent(state, {
-              type: "message.part.updated",
-              properties: {
-                part: {
-                  id: pending.reasoningPartId,
-                  sessionID: state.id,
-                  messageID: pending.messageId,
-                  type: "reasoning",
-                  text: pending.reasoning,
-                  time: { start: pending.startedAt, end: now },
+          if (block?.type === "reasoning") {
+            const key = blockKey(chunk.index);
+            const rb = pending.reasoningBlocks.get(key);
+            if (rb && rb.text) {
+              rb.end = now;
+              this.store.pushSessionEvent(state, {
+                type: "message.part.updated",
+                properties: {
+                  part: {
+                    id: rb.partId,
+                    sessionID: state.id,
+                    messageID: pending.messageId,
+                    type: "reasoning",
+                    text: rb.text,
+                    time: { start: rb.start, end: now },
+                  },
                 },
-              },
-            });
-          } else if (block?.type === "text" && pending.text) {
-            this.store.pushSessionEvent(state, {
-              type: "message.part.updated",
-              properties: {
-                part: {
-                  id: pending.textPartId,
-                  sessionID: state.id,
-                  messageID: pending.messageId,
-                  type: "text",
-                  text: pending.text,
-                  time: { start: pending.startedAt, end: now },
-                },
-              },
-            });
+              });
+            }
           }
         }
         break;
@@ -337,31 +348,34 @@ export class DshEventMapper {
                 time: { start: pending.startedAt, end: pending.endedAt },
               });
             }
-            if (pending.reasoning) {
+            // 多个思考块 → 多个独立 reasoning part（各自 start/end）
+            for (const block of pending.reasoningBlocks.values()) {
+              if (!block.text) continue;
               msg.parts.push({
-                id: pending.reasoningPartId,
+                id: block.partId,
                 sessionID: state.id,
                 messageID: pending.messageId,
                 type: "reasoning",
-                text: pending.reasoning,
-                time: { start: pending.startedAt, end: pending.endedAt },
+                text: block.text,
+                time: { start: block.start, end: block.end ?? pending.endedAt },
               });
             }
             for (const tool of pending.tools.values()) {
               msg.parts.push(this.toolPart(state, pending, tool));
             }
             // 推最终 part 状态（time.end 使 reasoning/text 的 spinner 停止、变灰）
-            if (pending.reasoning) {
+            for (const block of pending.reasoningBlocks.values()) {
+              if (!block.text) continue;
               this.store.pushSessionEvent(state, {
                 type: "message.part.updated",
                 properties: {
                   part: {
-                    id: pending.reasoningPartId,
+                    id: block.partId,
                     sessionID: state.id,
                     messageID: pending.messageId,
                     type: "reasoning",
-                    text: pending.reasoning,
-                    time: { start: pending.startedAt, end: pending.endedAt },
+                    text: block.text,
+                    time: { start: block.start, end: block.end ?? pending.endedAt },
                   },
                 },
               });

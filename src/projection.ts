@@ -45,8 +45,10 @@ export interface AssistantMessageView {
   time: number;
   /** 流式累积/最终文本 */
   text: string;
-  /** 思考（reasoning）文本 */
+  /** 思考（reasoning）文本（旧字段，全部块拼接；新代码用 thinkingBlocks） */
   thinking: string;
+  /** 思考块：key = `${step}:${index}` → 块文本。多次思考各自独立，不合并。 */
+  thinkingBlocks?: Map<string, string>;
   /** assistant/message 已落地（模型回复完成，可能仍在跑工具） */
   assembled: boolean;
   /** turn/end 已到达 */
@@ -131,9 +133,18 @@ export function applyEvent(messages: MessageView[], event: SessionEvent): boolea
       return true;
     }
     case "assistant/chunk": {
-      const data = event.data as { chunk?: { type?: string; text?: string; index?: number } };
+      const data = event.data as { step?: number; chunk?: { type?: string; text?: string; index?: number; blockType?: string; block?: { type?: string } } };
       const chunk = data.chunk;
       if (!chunk) return false;
+      // 思考块 key：DSH 每 step 的块索引从 0 重新编号，跨 step 必须区分
+      const blockKey = (index?: number): string => `${data.step ?? 0}:${index ?? 0}`;
+      // 追加思考文本到卡片（同时维护 thinking 拼接兼容旧逻辑 与 thinkingBlocks 分块）
+      const appendThinking = (card: AssistantMessageView, text: string): AssistantMessageView => {
+        const blocks = new Map(card.thinkingBlocks ?? new Map());
+        const key = blockKey(chunk.index);
+        blocks.set(key, (blocks.get(key) ?? "") + text);
+        return { ...card, thinking: card.thinking + text, thinkingBlocks: blocks, seq: event.seq };
+      };
       const last = messages[messages.length - 1];
       // 只追加到"当前"assistant 卡片（最后一个 assistant 且未 assembled）
       if (last?.kind === "assistant" && !last.assembled) {
@@ -142,7 +153,7 @@ export function applyEvent(messages: MessageView[], event: SessionEvent): boolea
           return true;
         }
         if (chunk.type === "reasoning-delta" && chunk.text) {
-          messages[messages.length - 1] = { ...last, thinking: last.thinking + chunk.text, seq: event.seq };
+          messages[messages.length - 1] = appendThinking(last, chunk.text);
           return true;
         }
         if (chunk.type === "block-end" && chunk.text) {
@@ -159,6 +170,7 @@ export function applyEvent(messages: MessageView[], event: SessionEvent): boolea
           time: event.time,
           text: chunk.text,
           thinking: "",
+          thinkingBlocks: new Map(),
           assembled: false,
           finished: false,
         });
@@ -171,6 +183,7 @@ export function applyEvent(messages: MessageView[], event: SessionEvent): boolea
           time: event.time,
           text: "",
           thinking: chunk.text,
+          thinkingBlocks: new Map([[blockKey(chunk.index), chunk.text]]),
           assembled: false,
           finished: false,
         });
@@ -212,6 +225,7 @@ export function applyEvent(messages: MessageView[], event: SessionEvent): boolea
         time: event.time,
         text,
         thinking: "",
+        thinkingBlocks: new Map(),
         assembled: true,
         finished: false,
         endedAt: event.time,
@@ -489,7 +503,13 @@ export function viewsToLegacyMessages(
         finish: v.finished ? (v.reason === "completed" ? "end_turn" : v.reason === "aborted" || v.reason === "interrupted" ? "canceled" : "error") : undefined,
       };
       const parts: LegacyPart[] = [];
-      if (v.thinking) {
+      // 思考块（多次思考各自独立 part）；旧会话无块信息时回退整段 thinking
+      if (v.thinkingBlocks && v.thinkingBlocks.size > 0) {
+        for (const text of v.thinkingBlocks.values()) {
+          if (!text) continue;
+          parts.push({ id: ocId("reasoning"), sessionID, messageID: v.id, type: "reasoning", text, time: { start: v.time, end: v.endedAt } });
+        }
+      } else if (v.thinking) {
         parts.push({ id: ocId("reasoning"), sessionID, messageID: v.id, type: "reasoning", text: v.thinking, time: { start: v.time, end: v.endedAt } });
       }
       if (v.text) {
