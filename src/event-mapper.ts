@@ -171,7 +171,7 @@ export class DshEventMapper {
               callID,
               partId: ocId("prt"),
               name: chunk.name ?? "tool",
-              state: { status: "running" },
+              state: { status: "running", time: { start: eventTime } },
               inputArgs: "",
               createdAt: Date.now(),
             };
@@ -239,7 +239,7 @@ export class DshEventMapper {
             callID,
             partId: ocId("prt"),
             name,
-            state: { status: "running" },
+            state: { status: "running", time: { start: event.time } },
             inputArgs: "",
             createdAt: Date.now(),
           };
@@ -305,11 +305,13 @@ export class DshEventMapper {
         const tool = pending.tools.get(callID);
         if (tool) {
           const failed = Boolean(data.error) || Boolean(first?.isError) || resultText.startsWith("Error:");
+          const now = event.time;
           // 对齐原版 ToolState：completed 必填 output + title；Shell 的展开
-          // 依赖 state.metadata.output（点击展开工具输出），Execute 读 state.output
+          // 依赖 state.metadata.output（点击展开工具输出），Execute 读 state.output；
+          // time 必填（Read 组件读 state.time.compacted）
           const prevMeta = tool.state.metadata ?? {};
           tool.state = failed
-            ? { ...tool.state, status: "error", error: resultText || data.error?.name || "tool error", metadata: { ...prevMeta, output: resultText } }
+            ? { ...tool.state, status: "error", error: resultText || data.error?.name || "tool error", metadata: { ...prevMeta, output: resultText }, time: { start: tool.createdAt, end: now } }
             : {
                 ...tool.state,
                 status: "completed",
@@ -318,6 +320,7 @@ export class DshEventMapper {
                 content: [{ type: "text", text: resultText }],
                 result: resultText,
                 metadata: { ...prevMeta, output: resultText },
+                time: { start: tool.createdAt, end: now },
               };
           this.store.pushSessionEvent(state, {
             type: "message.part.updated",
@@ -599,6 +602,7 @@ export class DshEventMapper {
         status: "running",
         input: { questions },
         content: [],
+        time: { start: Date.now() },
       },
       callID: toolCallId,
       time: { start: Date.now(), end: Date.now() },
@@ -637,6 +641,7 @@ export class DshEventMapper {
               ...tool.state,
               status: "completed",
               metadata: { answers: labels.map((l) => (Array.isArray(l) ? l : [])) },
+              time: { start: tool.createdAt, end: Date.now() },
             };
             this.store.pushSessionEvent(state, {
               type: "message.part.updated",

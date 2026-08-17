@@ -66,6 +66,8 @@ export interface LegacyToolState {
   title?: string;
   /** 工具完成后的附加信息（Shell 点击展开读 metadata.output；question 的 answers 等） */
   metadata?: Record<string, unknown>;
+  /** 工具执行时间（原版 ToolState 的 time 为必填；Read 组件读 time.compacted） */
+  time?: { start: number; end?: number; compacted?: number };
 }
 
 export interface LegacyToolPart {

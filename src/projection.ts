@@ -602,12 +602,14 @@ export function viewsToLegacyMessages(
         state: {
           status: t.status === "error" ? "error" : completed ? "completed" : "running",
           input: safeParseToolArgs(t.arguments),
-          // completed 必填 output+title；metadata.output 供 Shell 点击展开
+          // completed 必填 output+title；metadata.output 供 Shell 点击展开；
+          // time 必填（Read 组件读 state.time.compacted）
           ...(completed ? { output: result, title: toolDisplayName(t.name) } : {}),
           metadata: { ...(t.result ? { output: result } : {}) },
           content: t.result ? [{ type: "text", text: t.result }] : [],
           result: t.result,
           error: t.error ? t.error.name : undefined,
+          time: { start: t.startedAt, end: t.endedAt },
         },
         callID: t.id,
         time: { start: t.startedAt, end: t.endedAt },
