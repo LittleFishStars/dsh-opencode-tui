@@ -291,15 +291,29 @@ export class OcServer implements RouterContext {
     // （隔离测试环境返回 0 是因为没有会话，不是跨进程问题）
     const sessionQuery = this.ctx.get("sessionQuery") as {
       listSessions(signal?: AbortSignal): Promise<Array<{ header: { id: string; cwd?: string; createdAt: number; parentSession?: string; origin?: string } }>>;
+      readTitleSnapshots(ids: readonly string[]): Promise<Array<{ sessionId: string; status: "fulfilled" | "rejected"; value?: { title?: { title?: string; text?: string } } }>>;
     } | undefined;
     if (sessionQuery) {
       try {
         const records = await sessionQuery.listSessions();
         if (records.length > 0) {
+          // 按 cwd 过滤
+          const matched = records.filter((r) => !r.header.cwd || !this.directory || r.header.cwd === this.directory);
+          // 批量读标题（同 dsh-tui 的 readTitleSnapshots）
+          let titles = new Map<string, string>();
+          try {
+            const observations = await sessionQuery.readTitleSnapshots(matched.map((r) => r.header.id));
+            titles = new Map(
+              observations
+                .filter((o) => o.status === "fulfilled")
+                .map((o) => [o.sessionId, o.value?.title?.title ?? o.value?.title?.text ?? ""]),
+            );
+          } catch (error) {
+            ocLog(`[oc-server] readTitleSnapshots failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
           const out: Array<Record<string, unknown>> = [];
-          for (const record of records) {
+          for (const record of matched) {
             const header = record.header;
-            if (header.cwd && this.directory && header.cwd !== this.directory) continue;
             const dshId = header.id;
             const ocId = ocIdFromDsh(dshId);
             if (this.store.isDeleted(ocId)) continue;
@@ -310,6 +324,7 @@ export class OcServer implements RouterContext {
               // 轻量创建（不 hydrate，用户进入会话时按需加载）
               const state = this.store.getOrCreateSession(ocId, this.directory);
               state.dshSessionId = dshId;
+              state.title = titles.get(dshId) ?? "";
               state.createdAt = header.createdAt;
               state.updatedAt = header.createdAt;
               out.push(this.legacySession(state));
