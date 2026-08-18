@@ -1,14 +1,26 @@
 /**
  * 品牌字形。
  *
- * `logo` 为 DSH wordmark：left（muted "DS"）+ right（加粗 "H"）两半拼成 "DSH"。
- * 记号字符见 `marks`（`_` 空格+阴影底、`^` 上块+阴影底、`~` 阴影上块、
- * `,` 阴影下块），由渲染方（Logo 组件 / presentation epilogue）解释。
+ * WHALE_GLYPH：DeepSeek 官方鱼 logo 的半块渲染（figma I39:24057;88:8943
+ * fillGeometry 精确提取，26 列 × 8 半块行；空白格是固定网格的一部分，
+ * 渲染时保留不要裁剪）。来自 @deepseek-ai/dsh-code 的 whale-glyph.ts。
  *
- * D：顶右圆角 + 两侧竖 + 底平（避免底角实心块读成 Q）
- * S：上圈 + 左下竖 + 底横右下圆角（经典像素 S，中间无横，不与 e 混淆）
- * H：两侧竖 + 中横梁（无顶横/底横）
+ * `logo` / `go`：旧版 ASCII wordmark（保留给退出画面等小尺寸场景）。
  */
+export const WHALE_GLYPH: readonly string[] = [
+  "    ▄▄▄▄▄▄▄▄█    ▄█▄     ▄",
+  " ▄▄██████████▄▄  ▀███▄████",
+  "▄███████████████▄  ███▀▀▀ ",
+  "██     ▀▀█████▄▀██████    ",
+  "██▄       ▀████▄▄████     ",
+  " ██▄        ▀██████▀      ",
+  "  ▀██▄▄  ██▄  ▀███▄▄      ",
+  "     ▀▀███████▀▀ ▀▀▀      ",
+]
+
+/** 字形宽度（终端列）。 */
+export const WHALE_GLYPH_COLUMNS = 26
+
 export const logo = {
   left: ["         ", "█▀▀▄ █▀▀█", "█__█ █___", "▀▀▀▀ ▀▀▀▄"],
   right: ["    ", "█__█", "█▀▀█", "█__█"],
