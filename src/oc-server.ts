@@ -287,8 +287,40 @@ export class OcServer implements RouterContext {
    * 合并兼容层状态（含消息/tokens/agents），解决"读自己的而不是 DSH 的"。
    */
   async listSessions(scope?: string | null): Promise<Array<Record<string, unknown>>> {
-    // 始终使用文件系统扫描（sessionQuery.listSessions 在插件进程不可靠：
-    // 返回 0 或漏掉空会话），文件系统扫描能找到全部会话（两种目录格式）
+    // 主进程运行：sessionQuery.listSessions() 可用，直接读权威会话列表。
+    // （隔离测试环境返回 0 是因为没有会话，不是跨进程问题）
+    const sessionQuery = this.ctx.get("sessionQuery") as {
+      listSessions(signal?: AbortSignal): Promise<Array<{ header: { id: string; cwd?: string; createdAt: number; parentSession?: string; origin?: string } }>>;
+    } | undefined;
+    if (sessionQuery) {
+      try {
+        const records = await sessionQuery.listSessions();
+        if (records.length > 0) {
+          const out: Array<Record<string, unknown>> = [];
+          for (const record of records) {
+            const header = record.header;
+            if (header.cwd && this.directory && header.cwd !== this.directory) continue;
+            const dshId = header.id;
+            const ocId = ocIdFromDsh(dshId);
+            if (this.store.isDeleted(ocId)) continue;
+            const existing = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId);
+            if (existing) {
+              out.push(this.legacySession(existing));
+            } else {
+              // 轻量创建（不 hydrate，用户进入会话时按需加载）
+              const state = this.store.getOrCreateSession(ocId, this.directory);
+              state.dshSessionId = dshId;
+              state.createdAt = header.createdAt;
+              state.updatedAt = header.createdAt;
+              out.push(this.legacySession(state));
+            }
+          }
+          return out;
+        }
+      } catch (error) {
+        ocLog(`[oc-server] listSessions sessionQuery failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
     return this.fallbackFilesystemScan(scope);
   }
 
@@ -322,7 +354,6 @@ export class OcServer implements RouterContext {
           const existing = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId);
           if (existing) {
             // 已有会话（已 hydrate）：直接用完整状态
-            this.store.announceSession(existing);
             out.push(this.legacySession(existing));
           } else {
             // 未 hydrate：轻量提取标题，不加载全部消息（大会话 4-5 万事件，全量 hydrate 太慢）
@@ -332,7 +363,6 @@ export class OcServer implements RouterContext {
             state.title = title;
             state.createdAt = createdAt;
             state.updatedAt = createdAt;
-            this.store.announceSession(state);
             out.push(this.legacySession(state));
           }
         }
@@ -417,7 +447,6 @@ export class OcServer implements RouterContext {
       this.store.hydrateSession(dshId, folded.title, folded.preset, views, todos, diffs, folded.createdAt);
       const state = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId);
       if (state) {
-        this.store.announceSession(state);
         out.push(this.legacySession(state));
       }
     } catch (error) {
