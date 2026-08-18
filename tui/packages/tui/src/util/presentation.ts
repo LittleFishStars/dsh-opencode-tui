@@ -14,6 +14,7 @@ function wordmark(pad = "") {
 export function sessionEpilogue(input: { title: string; sessionID?: string }) {
   const weak = (text: string) => `${dim}${text.padEnd(10, " ")}${reset}`
   return [
+    "",
     ...wordmark("  "),
     "",
     `  ${brandBright}${bold}DeepSeek Harness${reset}`,
