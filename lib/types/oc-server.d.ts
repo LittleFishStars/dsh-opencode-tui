@@ -129,8 +129,12 @@ export declare class OcServer implements RouterContext {
      * 合并兼容层状态（含消息/tokens/agents），解决"读自己的而不是 DSH 的"。
      */
     listSessions(scope?: string | null): Promise<Array<Record<string, unknown>>>;
-    /** 回退：扫描文件系统获取会话列表（能找到全部会话，含两种目录格式）。 */
+    /** 回退：扫描文件系统获取会话列表（能找到全部会话，含两种目录格式）。
+     *  快速返回元信息（id/createdAt），标题后台异步提取后推送更新，
+     *  避免 26 个大会话串行/并行解压导致 TUI 请求超时。 */
     private fallbackFilesystemScan;
+    /** 后台提取会话标题：并行解压（并发 4），提取后更新 state.title 并推送 session.updated。 */
+    private extractTitlesInBackground;
     /** 轻量提取会话标题：解压文件，找 session/title 事件或首条 user 消息。不投影全部消息。 */
     private extractSessionTitle;
     /** 通过 sessionPersistence.inspect 加载事件并 hydrate 到兼容层。 */
