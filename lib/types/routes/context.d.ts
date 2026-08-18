@@ -43,4 +43,6 @@ export interface RouterContext {
      * 解决"会话列表读自己的而不是 DSH 的"——以 DSH 为权威数据源。
      */
     listSessions(scope?: string | null): Promise<Array<Record<string, unknown>>>;
+    /** 按需加载会话完整消息（用户进入会话时从文件系统 hydrate）。 */
+    hydrateSessionOnDemand(state: import("../types.js").SessionState): Promise<void>;
 }

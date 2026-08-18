@@ -42,6 +42,8 @@ export async function handleLegacySession(
     if (method === "GET" && sub === "message") {
       const state = ctx.store.sessions.get(sessionId);
       if (ctx.sessionOr404(state, res)) {
+        // 轻量会话按需加载消息（用户进入会话时）
+        await ctx.hydrateSessionOnDemand(state);
         sendJson(res, 200, state.messages);
       }
       return true;

@@ -131,7 +131,14 @@ export declare class OcServer implements RouterContext {
     listSessions(scope?: string | null): Promise<Array<Record<string, unknown>>>;
     /** 回退：扫描文件系统获取会话列表（能找到全部会话，含两种目录格式）。 */
     private fallbackFilesystemScan;
+    /** 轻量提取会话标题：解压文件，找 session/title 事件或首条 user 消息。不投影全部消息。 */
+    private extractSessionTitle;
     /** 通过 sessionPersistence.inspect 加载事件并 hydrate 到兼容层。 */
     private hydrateFromFilesystem;
+    /**
+     * 按需 hydrate：用户进入会话时从文件系统加载完整消息。
+     * 轻量列表会话只有元信息（快），这里补全消息内容。
+     */
+    hydrateSessionOnDemand(state: import("./types.js").SessionState): Promise<void>;
     private handle;
 }

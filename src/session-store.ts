@@ -49,6 +49,8 @@ export class SessionStore {
   readonly globalSse = new Set<ServerResponse>();
   /** 已被兼容层删除的会话 id（DSH 侧删除可能延迟同步，需从列表过滤）。 */
   private deleted = new Set<string>();
+  /** 已推送过 session.updated 的会话 id（listSessions 首次发现时 announce，避免无限循环） */
+  private announced = new Set<string>();
   private opts: SessionStoreOptions;
   private modelCache: ModelRef | undefined;
   /** 最近一次请求头里的模型上下文窗口（maxTokens；供 limit.context 百分比计算） */
@@ -154,6 +156,7 @@ export class SessionStore {
     if (!state) return true; // 已不存在视为成功
     this.sessions.delete(sessionId);
     this.deleted.add(sessionId);
+    this.unannounceSession(sessionId);
     // 通知 TUI：从会话列表移除（sync.data.session 的 session.deleted 分支）
     this.pushEvent(
       {
@@ -169,6 +172,26 @@ export class SessionStore {
   /** 某会话是否已被兼容层删除（用于 listSessions 过滤）。 */
   isDeleted(sessionId: string): boolean {
     return this.deleted.has(sessionId);
+  }
+
+  /**
+   * 向 TUI 推送 session.updated（sync.data.session 的数据源）。
+   * 已 announce 过的会话跳过，避免 listSessions 刷新触发无限循环。
+   * 返回是否首次 announce。
+   */
+  announceSession(state: SessionState): boolean {
+    if (this.announced.has(state.id)) return false;
+    this.announced.add(state.id);
+    this.pushSessionEvent(state, {
+      type: "session.updated",
+      properties: { info: this.infoOf(state) },
+    });
+    return true;
+  }
+
+  /** 会话删除时同时移除 announce 标记（重删/重进需要重新 announce）。 */
+  unannounceSession(sessionId: string): void {
+    this.announced.delete(sessionId);
   }
 
   // ── 查询 ─────────────────────────────────────────────────────────────────

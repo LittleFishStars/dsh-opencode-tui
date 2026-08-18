@@ -55,6 +55,8 @@ export declare class SessionStore {
     readonly globalSse: Set<ServerResponse<import("http").IncomingMessage>>;
     /** 已被兼容层删除的会话 id（DSH 侧删除可能延迟同步，需从列表过滤）。 */
     private deleted;
+    /** 已推送过 session.updated 的会话 id（listSessions 首次发现时 announce，避免无限循环） */
+    private announced;
     private opts;
     private modelCache;
     /** 最近一次请求头里的模型上下文窗口（maxTokens；供 limit.context 百分比计算） */
@@ -87,6 +89,14 @@ export declare class SessionStore {
     removeSession(sessionId: string): boolean;
     /** 某会话是否已被兼容层删除（用于 listSessions 过滤）。 */
     isDeleted(sessionId: string): boolean;
+    /**
+     * 向 TUI 推送 session.updated（sync.data.session 的数据源）。
+     * 已 announce 过的会话跳过，避免 listSessions 刷新触发无限循环。
+     * 返回是否首次 announce。
+     */
+    announceSession(state: SessionState): boolean;
+    /** 会话删除时同时移除 announce 标记（重删/重进需要重新 announce）。 */
+    unannounceSession(sessionId: string): void;
     findByDsh(dshSessionId: string): SessionState | undefined;
     findMessage(state: SessionState, messageId: string): import("./types.js").LegacyMessage | undefined;
     getSessionIdByDsh(dshSessionId: string): string | undefined;
