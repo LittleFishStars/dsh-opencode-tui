@@ -287,73 +287,9 @@ export class OcServer implements RouterContext {
    * 合并兼容层状态（含消息/tokens/agents），解决"读自己的而不是 DSH 的"。
    */
   async listSessions(scope?: string | null): Promise<Array<Record<string, unknown>>> {
-    // 主进程运行：sessionQuery.listSessions() 可用，直接读权威会话列表。
-    // （隔离测试环境返回 0 是因为没有会话，不是跨进程问题）
-    const sessionQuery = this.ctx.get("sessionQuery") as {
-      listSessions(signal?: AbortSignal): Promise<Array<{ header: { id: string; cwd?: string; createdAt: number; parentSession?: string; origin?: string } }>>;
-      readTitleSnapshots(ids: readonly string[]): Promise<Array<{ sessionId: string; status: "fulfilled" | "rejected"; value?: { title?: { title?: string; text?: string } } }>>;
-    } | undefined;
-    if (sessionQuery) {
-      try {
-        const records = await sessionQuery.listSessions();
-        ocLog(`[oc-server] DIAG listSessions: sessionQuery returned ${records.length} records, directory=${this.directory}`);
-        if (records.length > 0) {
-          // 按 cwd 过滤
-          const matched = records.filter((r) => !r.header.cwd || !this.directory || r.header.cwd === this.directory);
-          ocLog(`[oc-server] DIAG listSessions: matched ${matched.length} by cwd`);
-          // 批量读标题（同 dsh-tui 的 readTitleSnapshots）
-          let titles = new Map<string, string>();
-          try {
-            const normalize = (id: string | undefined): string => (id ? (id.startsWith("session-") ? id.slice(8) : id) : "");
-            const observations = await sessionQuery.readTitleSnapshots(matched.map((r) => normalize(r.header.id)));
-            const fulfilled = observations.filter((o) => o.status === "fulfilled");
-            const withTitle = fulfilled.filter((o) => o.value?.title?.title);
-            ocLog(`[oc-server] DIAG listSessions: readTitleSnapshots ${observations.length} obs, ${fulfilled.length} fulfilled, ${withTitle.length} with title`);
-            titles = new Map(
-              observations
-                .filter((o) => o.status === "fulfilled")
-                .map((o) => [o.sessionId, o.value?.title?.title ?? o.value?.title?.text ?? ""]),
-            );
-          } catch (error) {
-            ocLog(`[oc-server] DIAG readTitleSnapshots failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
-          }
-          // 统一会话 id：DSH 返回的 header.id 可能带 session- 前缀（目录名原样），
-          // 剥离为纯 UUID，与文件系统扫描、readTitleSnapshots 索引一致
-          const normalizeId = (id: string | undefined): string => {
-            if (!id) return "";
-            return id.startsWith("session-") ? id.slice(8) : id;
-          };
-          const out: Array<Record<string, unknown>> = [];
-          for (const record of matched) {
-            const header = record.header;
-            const dshId = normalizeId(header.id);
-            if (!dshId) continue;
-            const ocId = ocIdFromDsh(dshId);
-            if (this.store.isDeleted(ocId)) continue;
-            const existing = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId);
-            if (existing) {
-              out.push(this.legacySession(existing));
-            } else {
-              // 轻量创建（不 hydrate，用户进入会话时按需加载）
-              const state = this.store.getOrCreateSession(ocId, this.directory);
-              state.dshSessionId = dshId;
-              state.title = titles.get(dshId) ?? "";
-              state.createdAt = header.createdAt;
-              state.updatedAt = header.createdAt;
-              out.push(this.legacySession(state));
-            }
-          }
-          ocLog(`[oc-server] DIAG listSessions: returning ${out.length} sessions via sessionQuery`);
-          return out;
-        }
-      } catch (error) {
-        ocLog(`[oc-server] DIAG sessionQuery branch failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
-      }
-    }
-    ocLog(`[oc-server] DIAG listSessions: falling back to filesystem scan`);
-    const fsResult = await this.fallbackFilesystemScan(scope);
-    ocLog(`[oc-server] DIAG listSessions: filesystem scan returned ${fsResult.length}`);
-    return fsResult;
+    // sessionQuery 在插件进程抛 "cannot get required service sessions in inactive context"，
+    // readTitleSnapshots 同样不可用。直接使用文件系统扫描（可靠，返回全部会话）。
+    return this.fallbackFilesystemScan(scope);
   }
 
   /** 回退：扫描文件系统获取会话列表（能找到全部会话，含两种目录格式）。 */
@@ -363,8 +299,9 @@ export class OcServer implements RouterContext {
       const sessionsRoot = process.env.DSH_OPENCODE_SESSION_ROOT
         ? process.env.DSH_OPENCODE_SESSION_ROOT
         : join(process.env.DSH_HOME ?? homedir(), ".dsh", "sessions");
-      ocLog(`[oc-server] DIAG fallback: sessionsRoot=${sessionsRoot}, DSH_HOME=${process.env.DSH_HOME ?? "UNSET"}, OC_ROOT=${process.env.DSH_OPENCODE_SESSION_ROOT ?? "UNSET"}, homedir=${homedir()}, cwd=${process.cwd()}`);
       const entries = await readdir(sessionsRoot, { withFileTypes: true }).catch(() => []);
+      // 第一阶段：收集会话元信息（id/createdAt/file），快
+      const sessions: Array<{ dshId: string; ocId: string; createdAt: number; file: string }> = [];
       for (const entry of entries) {
         if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
         if (entry.name !== encodeCwdSlug(this.directory)) continue;
@@ -384,20 +321,34 @@ export class OcServer implements RouterContext {
             const st = await stat(sessionFile);
             createdAt = st.mtimeMs;
           } catch {}
-          const existing = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId);
-          if (existing) {
-            // 已有会话（已 hydrate）：直接用完整状态
-            out.push(this.legacySession(existing));
-          } else {
-            // 未 hydrate：轻量提取标题，不加载全部消息（大会话 4-5 万事件，全量 hydrate 太慢）
-            const title = await this.extractSessionTitle(sessionFile);
-            const state = this.store.getOrCreateSession(ocId, this.directory);
-            state.dshSessionId = dshId;
-            state.title = title;
-            state.createdAt = createdAt;
-            state.updatedAt = createdAt;
-            out.push(this.legacySession(state));
-          }
+          sessions.push({ dshId, ocId, createdAt, file: sessionFile });
+        }
+      }
+      // 第二阶段：并行提取标题（限制并发，避免大会话解压卡死）
+      const concurrency = 4;
+      const titles = new Map<string, string>();
+      let index = 0;
+      const workers = Array.from({ length: Math.min(concurrency, sessions.length) }, async () => {
+        while (index < sessions.length) {
+          const s = sessions[index++]!;
+          const title = await this.extractSessionTitle(s.file);
+          if (title) titles.set(s.dshId, title);
+        }
+      });
+      await Promise.all(workers);
+      // 组装结果：已 hydrate 的用完整状态，否则轻量创建
+      for (const s of sessions) {
+        if (this.store.isDeleted(s.ocId)) continue;
+        const existing = [...this.store.sessions.values()].find((st) => st.dshSessionId === s.dshId);
+        if (existing) {
+          out.push(this.legacySession(existing));
+        } else {
+          const state = this.store.getOrCreateSession(s.ocId, this.directory);
+          state.dshSessionId = s.dshId;
+          state.title = titles.get(s.dshId) ?? "";
+          state.createdAt = s.createdAt;
+          state.updatedAt = s.createdAt;
+          out.push(this.legacySession(state));
         }
       }
     } catch (error) {
