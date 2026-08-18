@@ -30,6 +30,7 @@ import { readBody, sendJson } from "./http-util.js";
 import { ocLog } from "./logging.js";
 import { type SessionState } from "./types.js";
 import { handleApi } from "./routes/api.js";
+import { projectEvents, foldSessionMeta, todosFromEvents, diffsFromEvents } from "./projection.js";
 import { handleLegacyMisc, handleLegacySession } from "./routes/legacy.js";
 import type { RouterContext } from "./routes/context.js";
 
@@ -285,19 +286,17 @@ export class OcServer implements RouterContext {
    * 查询 DSH 会话列表（直查 sessionQuery，以 DSH 为权威数据源）。
    * 合并兼容层状态（含消息/tokens/agents），解决"读自己的而不是 DSH 的"。
    */
+  private _listSessionsBusy = false;
   async listSessions(scope?: string | null): Promise<Array<Record<string, unknown>>> {
+    this._listSessionsBusy = true;
     const out: Array<Record<string, unknown>> = [];
     try {
-      // DSH persistence.list/listSnapshots 在插件进程内返回 0（跨进程不同步），
-      // 改为直读 ~/.dsh/sessions/ 文件系统，从目录名解析 session id 与 cwd。
-      // 优先使用 DSH_OPENCODE_SESSION_ROOT（DSH agent 实际存储位置），否则回退到 DSH_HOME/sessions 或 ~/.dsh/sessions
       const sessionsRoot = process.env.DSH_OPENCODE_SESSION_ROOT
         ? process.env.DSH_OPENCODE_SESSION_ROOT
         : join(process.env.DSH_HOME ?? homedir(), ".dsh", "sessions");
       const entries = await readdir(sessionsRoot, { withFileTypes: true }).catch(() => []);
       for (const entry of entries) {
         if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-        // 按 cwd 目录名匹配（对齐 dsh-web 的项目视图）
         if (entry.name !== encodeCwdSlug(this.directory)) continue;
         const cwdDir = join(sessionsRoot, entry.name);
         const sessionDirs = await readdir(cwdDir, { withFileTypes: true }).catch(() => []);
@@ -308,37 +307,47 @@ export class OcServer implements RouterContext {
           const dshId = match[1];
           const ocId = ocIdFromDsh(dshId);
           if (this.store.isDeleted(ocId)) continue;
-          // 获取 createdAt（文件 mtime）
-          let createdAt = Date.now();
-          try {
-            const sessionFile = join(cwdDir, sd.name, "session.jsonl.zstd");
-            const st = await stat(sessionFile);
-            createdAt = st.mtimeMs;
-          } catch {}
           const existing = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId);
           if (existing) {
-            // 兼容层已 hydrate（有消息内容）
             out.push(this.legacySession(existing));
           } else {
-            // DSH 有但兼容层未 hydrate：创建占位状态，用户选择时会触发消息加载
-            const placeholder = this.store.getOrCreateSession(ocId, this.directory);
-            placeholder.dshSessionId = dshId;
-            placeholder.createdAt = createdAt;
-            placeholder.updatedAt = createdAt;
-            this.store.touchSession(placeholder);
-            out.push(this.legacySession(placeholder));
+            // DSH 有但兼容层未 hydrate：从会话文件加载事件并 hydrate
+            await this.hydrateFromFilesystem(dshId, cwdDir, sd.name, out);
           }
         }
       }
     } catch (error) {
       ocLog(`[oc-server] listSessions failed: ${error instanceof Error ? error.message : String(error)}`);
-      for (const state of this.store.sessions.values()) {
-        if (scope === "project" && state.directory !== this.directory) continue;
-        if (this.store.isDeleted(state.id)) continue;
-        out.push(this.legacySession(state));
-      }
+    } finally {
+      this._listSessionsBusy = false;
     }
     return out;
+  }
+
+  /** 从 DSH 会话文件加载事件并 hydrate 到兼容层。 */
+  private async hydrateFromFilesystem(dshId: string, cwdDir: string, sessionDirName: string, out: Array<Record<string, unknown>>): Promise<void> {
+    try {
+      const sessionFile = join(cwdDir, sessionDirName, "session.jsonl.zstd");
+      const buf = await readFile(sessionFile);
+      // 解压 zstd
+      const { execFileSync } = await import("node:child_process");
+      const raw = execFileSync("zstd", ["-d", "-c"], { input: buf, maxBuffer: 10 * 1024 * 1024 }).toString("utf-8");
+      const events: SessionEvent[] = [];
+      for (const line of raw.split("\n")) {
+        if (!line.trim()) continue;
+        try { events.push(JSON.parse(line) as SessionEvent); } catch {}
+      }
+      if (events.length === 0) return;
+      const views = projectEvents(events);
+      const folded = foldSessionMeta(dshId, events[0]?.time ?? Date.now(), events);
+      const todos = todosFromEvents(events);
+      const diffs = diffsFromEvents(events);
+      this.store.hydrateSession(dshId, folded.title, folded.preset, views, todos, diffs, folded.createdAt);
+      const state = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId);
+      if (state) out.push(this.legacySession(state));
+    } catch (error) {
+      ocLog(`[oc-server] hydrateFromFilesystem ${dshId.slice(0,12)} failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   // ── HTTP 入口与路由分发 ─────────────────────────────────────────────────
 

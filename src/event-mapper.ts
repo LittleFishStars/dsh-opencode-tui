@@ -134,6 +134,9 @@ export class DshEventMapper {
           if (!block) {
             block = { partId: ocId("prt"), text: "", start: eventTime };
             pending.reasoningBlocks.set(key, block);
+            ocLog(`[oc-server] reasoning-delta new block key=${key}, partId=${block.partId.slice(0,12)}`);
+          } else {
+            ocLog(`[oc-server] reasoning-delta existing block key=${key}, partId=${block.partId.slice(0,12)}`);
           }
           block.text += chunk.text;
           this.store.pushSessionEvent(state, {
@@ -189,8 +192,10 @@ export class DshEventMapper {
           if (block?.type === "reasoning") {
             const key = blockKey(chunk.index);
             const rb = pending.reasoningBlocks.get(key);
+            ocLog(`[oc-server] block-end reasoning key=${key}, found=${!!rb}, text=${rb ? rb.text.slice(0,20) : "null"}`);
             if (rb && rb.text) {
               rb.end = now;
+              ocLog(`[oc-server] block-end pushing part ${rb.partId.slice(0,12)} with time.end=${now}`);
               this.store.pushSessionEvent(state, {
                 type: "message.part.updated",
                 properties: {
