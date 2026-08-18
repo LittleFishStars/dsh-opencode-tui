@@ -130,7 +130,7 @@ export declare class OcServer implements RouterContext {
      */
     private _listSessionsBusy;
     listSessions(scope?: string | null): Promise<Array<Record<string, unknown>>>;
-    /** 从 DSH 会话文件加载事件并 hydrate 到兼容层。 */
+    /** 通过 sessionPersistence.inspect 加载事件并 hydrate 到兼容层。 */
     private hydrateFromFilesystem;
     private handle;
 }

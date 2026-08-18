@@ -21,7 +21,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
 import type { SessionHeader as DshSessionHeader } from "@deepseek-ai/dsh-session";
-import type { SessionEvent } from "@deepseek-ai/dsh-session";
+import type { SessionEvent, SessionId } from "@deepseek-ai/dsh-session";
 import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import { legacyModelFromV2, type LegacyModel, type ModelRef } from "./oc-proto.js";
 import { SessionStore, ocIdFromDsh, projectIdOf } from "./session-store.js";
@@ -307,12 +307,19 @@ export class OcServer implements RouterContext {
           const dshId = match[1];
           const ocId = ocIdFromDsh(dshId);
           if (this.store.isDeleted(ocId)) continue;
+          // 获取 createdAt（文件 mtime）
+          let createdAt = Date.now();
+          try {
+            const sessionFile = join(cwdDir, sd.name, "session.jsonl.zstd");
+            const st = await stat(sessionFile);
+            createdAt = st.mtimeMs;
+          } catch {}
           const existing = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId);
           if (existing) {
             out.push(this.legacySession(existing));
           } else {
-            // DSH 有但兼容层未 hydrate：从会话文件加载事件并 hydrate
-            await this.hydrateFromFilesystem(dshId, cwdDir, sd.name, out);
+            // DSH 有但兼容层未 hydrate：通过 inspect API 加载事件并 hydrate
+            await this.hydrateFromFilesystem(dshId, createdAt, cwdDir, sd.name, out);
           }
         }
       }
@@ -324,12 +331,12 @@ export class OcServer implements RouterContext {
     return out;
   }
 
-  /** 从 DSH 会话文件加载事件并 hydrate 到兼容层。 */
-  private async hydrateFromFilesystem(dshId: string, cwdDir: string, sessionDirName: string, out: Array<Record<string, unknown>>): Promise<void> {
+  /** 通过 sessionPersistence.inspect 加载事件并 hydrate 到兼容层。 */
+  private async hydrateFromFilesystem(dshId: string, createdAt: number, cwdDir: string, sessionDirName: string, out: Array<Record<string, unknown>>): Promise<void> {
     try {
       const sessionFile = join(cwdDir, sessionDirName, "session.jsonl.zstd");
-      const buf = await readFile(sessionFile);
-      // 解压 zstd
+      const buf = await readFile(sessionFile).catch(() => null);
+      if (!buf) return;
       const { execFileSync } = await import("node:child_process");
       const raw = execFileSync("zstd", ["-d", "-c"], { input: buf, maxBuffer: 10 * 1024 * 1024 }).toString("utf-8");
       const events: SessionEvent[] = [];
@@ -339,7 +346,7 @@ export class OcServer implements RouterContext {
       }
       if (events.length === 0) return;
       const views = projectEvents(events);
-      const folded = foldSessionMeta(dshId, events[0]?.time ?? Date.now(), events);
+      const folded = foldSessionMeta(dshId, createdAt, events);
       const todos = todosFromEvents(events);
       const diffs = diffsFromEvents(events);
       this.store.hydrateSession(dshId, folded.title, folded.preset, views, todos, diffs, folded.createdAt);
