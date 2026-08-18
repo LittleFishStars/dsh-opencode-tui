@@ -256,9 +256,7 @@ export function DialogSessionList() {
       .map((id) => {
         const x = sessionMap.get(id)
         if (!x) return undefined
-        // 按工作区分组（对齐 dsh-web）：取 session 所在目录的 basename；
-        // 与当前项目主目录相同则归入项目名，否则显示目录名。
-        const cat = sessionWorkspace(x)
+        const cat = sessionTimeCategory(x)
         return buildOption(id, cat)
       })
       .filter((x) => x !== undefined)
@@ -267,23 +265,12 @@ export function DialogSessionList() {
   })
 
   /**
-   * 由 session 的工作目录推导工作区分类名。
-   * 兼容层（dsh-opencode-tui）按 cwd 过滤后所有会话都在同一项目下，
-   * 故通常归入同一分类；若未来放开跨目录，此处自然按目录 basename 分组。
+   * 由 session 的更新时间推导时间分类名（Today / date string）。
    */
-  function sessionWorkspace(x: NonNullable<ReturnType<typeof sessions>[number]>): string {
-    const dir = x.path
-      ? x.directory.endsWith(x.path)
-        ? x.directory.slice(0, -x.path.length).replace(/\/$/, "")
-        : x.directory
-      : x.directory
-    if (!dir) return "Sessions"
-    const mainDir = project.data.project.mainDir
-    if (dir === mainDir) {
-      const name = x.path ? path.basename(x.path) : path.basename(dir)
-      return name || "Current Project"
-    }
-    return path.basename(dir) || dir
+  function sessionTimeCategory(x: NonNullable<ReturnType<typeof sessions>[number]>): string {
+    const today = new Date().toDateString()
+    const label = new Date(x.time.updated).toDateString()
+    return label === today ? "Today" : label
   }
 
   onMount(() => {

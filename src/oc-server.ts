@@ -15,7 +15,12 @@
  * 删除会话编排，以及路由模块依赖的服务方法（RouterContext 实现）。
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { readdir, readFile, stat } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { Context } from "@deepseek-ai/cordis";
+import type { SessionHeader as DshSessionHeader } from "@deepseek-ai/dsh-session";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import { legacyModelFromV2, type LegacyModel, type ModelRef } from "./oc-proto.js";
@@ -27,6 +32,29 @@ import { type SessionState } from "./types.js";
 import { handleApi } from "./routes/api.js";
 import { handleLegacyMisc, handleLegacySession } from "./routes/legacy.js";
 import type { RouterContext } from "./routes/context.js";
+
+// ── 文件系统扫描 ──────────────────────────────────────────────────────
+
+/** 递归查找目录下的所有 session.jsonl.zstd（DSH 会话持久化文件）。 */
+async function walkSessions(dir: string, depth = 3): Promise<string[]> {
+  if (depth <= 0) return [];
+  const out: string[] = [];
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      out.push(...(await walkSessions(full, depth - 1)));
+    } else if (entry.name === "session.jsonl.zstd" || entry.name === "session.jsonl") {
+      out.push(full);
+    }
+  }
+  return out;
+}
 
 // ── 配置 ───────────────────────────────────────────────────────────────────
 
@@ -62,6 +90,11 @@ export interface OcServerOptions {
 }
 
 // ── server ─────────────────────────────────────────────────────────────────
+
+/** 将 cwd 编码为 DSH 会话目录名格式：/home/ylxc/Projects/DSH → --home-ylxc-Projects-DSH-- */
+function encodeCwdSlug(cwd: string): string {
+  return "-" + cwd.replace(/\//g, "-") + "--";
+}
 
 export class OcServer implements RouterContext {
   readonly store: SessionStore;
@@ -254,33 +287,49 @@ export class OcServer implements RouterContext {
   async listSessions(scope?: string | null): Promise<Array<Record<string, unknown>>> {
     const out: Array<Record<string, unknown>> = [];
     try {
-      // 直查持久层 listSnapshots（而非 sessionQuery.listSessions），
-      // 后者依赖 corpus 索引/懒加载，在插件进程内可能返回空。
-      const snapshots = await this.ctx.sessionPersistence.listSnapshots();
-      ocLog(`[oc-server] listSessions: ${snapshots.length} snapshots from persistence, my directory=${this.directory}`);
-      for (const snapshot of snapshots) {
-        const header = snapshot.header;
-        // 按工作目录过滤（对齐 dsh-web 的项目视图）
-        if (header.cwd && this.directory && header.cwd !== this.directory) continue;
-        const ocId = ocIdFromDsh(header.id);
-        // 兼容层已删除的会话（DSH 侧删除可能延迟同步），从列表过滤
-        if (this.store.isDeleted(ocId)) continue;
-        let state = [...this.store.sessions.values()].find((s) => s.dshSessionId === header.id);
-        if (state) {
-          out.push(this.legacySession(state));
-        } else {
-          // DSH 有但兼容层未 hydrate：创建占位状态并同步。
-          state = this.store.getOrCreateSession(ocId, header.cwd ?? this.directory);
-          state.dshSessionId = header.id;
-          state.createdAt = header.createdAt;
-          state.updatedAt = header.createdAt;
-          this.store.touchSession(state);
-          out.push(this.legacySession(state));
+      // DSH persistence.list/listSnapshots 在插件进程内返回 0（跨进程不同步），
+      // 改为直读 ~/.dsh/sessions/ 文件系统，从目录名解析 session id 与 cwd。
+      // 扫描 DSH 会话存储根：优先 DSH_OPENCODE_SESSION_ROOT（DSH agent 实际存储位置），否则回退到 DSH_HOME/sessions 或 ~/.dsh/sessions
+      const ocRoot = process.env.DSH_OPENCODE_SESSION_ROOT;
+      const dshHome = process.env.DSH_HOME ?? join(homedir(), ".dsh");
+      const sessionsRoot = ocRoot ? ocRoot : join(dshHome, "sessions");
+      const entries = await readdir(sessionsRoot, { withFileTypes: true }).catch(() => []);
+      for (const entry of entries) {
+        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+        // 按 cwd 目录名匹配（对齐 dsh-web 的项目视图）
+        if (entry.name !== encodeCwdSlug(this.directory)) continue;
+        const cwdDir = join(sessionsRoot, entry.name);
+        const sessionDirs = await readdir(cwdDir, { withFileTypes: true }).catch(() => []);
+        for (const sd of sessionDirs) {
+          if (!sd.isDirectory()) continue;
+          // 会话目录名：session-<uuid> → id = uuid
+          const match = sd.name.match(/^session-(.+)$/);
+          if (!match || !match[1]) continue;
+          const dshId = match[1];
+          const ocId = ocIdFromDsh(dshId);
+          if (this.store.isDeleted(ocId)) continue;
+          // 获取 createdAt（文件 mtime，精确到秒）
+          let createdAt = Date.now();
+          try {
+            const sessionFile = join(cwdDir, sd.name, "session.jsonl.zstd");
+            const st = await stat(sessionFile);
+            createdAt = st.mtimeMs;
+          } catch {}
+          let state = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId);
+          if (state) {
+            out.push(this.legacySession(state));
+          } else {
+            state = this.store.getOrCreateSession(ocId, this.directory);
+            state.dshSessionId = dshId;
+            state.createdAt = createdAt;
+            state.updatedAt = createdAt;
+            this.store.touchSession(state);
+            out.push(this.legacySession(state));
+          }
         }
       }
     } catch (error) {
       ocLog(`[oc-server] listSessions failed: ${error instanceof Error ? error.message : String(error)}`);
-      // 失败回退到兼容层内存
       for (const state of this.store.sessions.values()) {
         if (scope === "project" && state.directory !== this.directory) continue;
         if (this.store.isDeleted(state.id)) continue;
@@ -289,7 +338,6 @@ export class OcServer implements RouterContext {
     }
     return out;
   }
-
   // ── HTTP 入口与路由分发 ─────────────────────────────────────────────────
 
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
