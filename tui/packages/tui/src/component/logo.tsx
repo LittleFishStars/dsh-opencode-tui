@@ -23,6 +23,7 @@ export function Logo() {
   return (
     <box flexDirection="row" gap={2}>
       <box flexDirection="column" width={WHALE_GLYPH_COLUMNS}>
+        <box height={1} />
         <For each={WHALE_GLYPH}>
           {(line) => <text fg={DEEPSEEK_BRAND}>{line}</text>}
         </For>
