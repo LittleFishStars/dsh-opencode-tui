@@ -296,13 +296,16 @@ export class OcServer implements RouterContext {
     if (sessionQuery) {
       try {
         const records = await sessionQuery.listSessions();
+        ocLog(`[oc-server] DIAG listSessions: sessionQuery returned ${records.length} records, directory=${this.directory}`);
         if (records.length > 0) {
           // 按 cwd 过滤
           const matched = records.filter((r) => !r.header.cwd || !this.directory || r.header.cwd === this.directory);
+          ocLog(`[oc-server] DIAG listSessions: matched ${matched.length} by cwd`);
           // 批量读标题（同 dsh-tui 的 readTitleSnapshots）
           let titles = new Map<string, string>();
           try {
             const observations = await sessionQuery.readTitleSnapshots(matched.map((r) => r.header.id));
+            ocLog(`[oc-server] DIAG listSessions: readTitleSnapshots returned ${observations.length} observations`);
             titles = new Map(
               observations
                 .filter((o) => o.status === "fulfilled")
@@ -330,13 +333,17 @@ export class OcServer implements RouterContext {
               out.push(this.legacySession(state));
             }
           }
+          ocLog(`[oc-server] DIAG listSessions: returning ${out.length} sessions via sessionQuery`);
           return out;
         }
       } catch (error) {
         ocLog(`[oc-server] listSessions sessionQuery failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    return this.fallbackFilesystemScan(scope);
+    ocLog(`[oc-server] DIAG listSessions: falling back to filesystem scan`);
+    const fsResult = await this.fallbackFilesystemScan(scope);
+    ocLog(`[oc-server] DIAG listSessions: filesystem scan returned ${fsResult.length}`);
+    return fsResult;
   }
 
   /** 回退：扫描文件系统获取会话列表（能找到全部会话，含两种目录格式）。 */
