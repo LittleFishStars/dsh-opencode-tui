@@ -115,6 +115,9 @@ function apply(ctx: Context, config: PluginConfig) {
       const dshHome = process.env.DSH_HOME ?? join(homedir(), ".dsh");
       const sessionsRoot = ocRoot ? ocRoot : join(dshHome, "sessions");
       const entries = await fs.readdir(sessionsRoot, { withFileTypes: true }).catch(() => []);
+      // dshSessionId 可能带 session- 前缀，统一提取 UUID 部分
+      const targetId = dshSessionId?.startsWith('session-') ? dshSessionId.slice(8) : dshSessionId;
+      dbgLog(`onDeleteSession: scanning ${sessionsRoot} for ${targetId?.slice(0,12)}`);
       for (const entry of entries) {
         if (!entry.isDirectory()) continue;
         const cwdDir = join(sessionsRoot, entry.name);
@@ -123,7 +126,7 @@ function apply(ctx: Context, config: PluginConfig) {
           if (!sd.isDirectory()) continue;
           const match = sd.name.match(/^session-(.+)$/);
           const matchedId = match ? match[1] : undefined;
-          if (!matchedId || matchedId !== dshSessionId) continue;
+          if (!matchedId || matchedId !== targetId) continue;
           const sessionDir = join(cwdDir, sd.name);
           await fs.rm(sessionDir, { recursive: true, force: true });
           dbgLog(`deleted artifact ${sessionDir} for session ${dshSessionId}`);

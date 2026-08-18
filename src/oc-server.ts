@@ -286,9 +286,61 @@ export class OcServer implements RouterContext {
    * 查询 DSH 会话列表（直查 sessionQuery，以 DSH 为权威数据源）。
    * 合并兼容层状态（含消息/tokens/agents），解决"读自己的而不是 DSH 的"。
    */
-  private _listSessionsBusy = false;
   async listSessions(scope?: string | null): Promise<Array<Record<string, unknown>>> {
-    this._listSessionsBusy = true;
+    // 完全复制 dsh-tui 的方法：使用 sessionQuery.listSessions() 获取会话列表
+    // sessionQuery.listSessions() 返回 SessionRecord[]（含 header: SessionHeader）
+    const sessionQuery = this.ctx.get("sessionQuery") as {
+      listSessions(signal?: AbortSignal): Promise<Array<{ header: { id: string; cwd?: string; createdAt: number; parentSession?: string; origin?: string; agentPreset?: string }; live: boolean; persisted: boolean }>>;
+      readSession(id: string): Promise<{ session: { id: string }; events: SessionEvent[] }>;
+    } | undefined;
+    if (!sessionQuery) {
+      ocLog(`[oc-server] listSessions: sessionQuery not available`);
+      return this.fallbackFilesystemScan(scope);
+    }
+    try {
+      const records = await sessionQuery.listSessions();
+        // 插件进程内 sessionQuery.listSessions() 返回 0（跨进程不同步），回退到文件系统扫描
+      if (records.length === 0) {
+            return this.fallbackFilesystemScan(scope);
+      }
+      const out: Array<Record<string, unknown>> = [];
+      for (const record of records) {
+        const header = record.header;
+        // 按 cwd 过滤（对齐 dsh-web 的项目视图）
+        if (header.cwd && this.directory && header.cwd !== this.directory) continue;
+        const dshId = header.id;
+        const ocId = ocIdFromDsh(dshId);
+        if (this.store.isDeleted(ocId)) continue;
+        const existing = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId);
+        if (existing) {
+          out.push(this.legacySession(existing));
+        } else {
+          // 通过 sessionQuery.readSession 加载事件并 hydrate
+          try {
+            const snapshot = await sessionQuery.readSession(dshId);
+            const events = snapshot.events;
+            if (events.length === 0) continue;
+            const views = projectEvents(events);
+            const folded = foldSessionMeta(dshId, header.createdAt, events);
+            const todos = todosFromEvents(events);
+            const diffs = diffsFromEvents(events);
+            this.store.hydrateSession(dshId, folded.title, folded.preset, views, todos, diffs, header.createdAt);
+            const state = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId);
+            if (state) out.push(this.legacySession(state));
+          } catch (error) {
+            ocLog(`[oc-server] listSessions: readSession ${dshId.slice(0,12)} failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+      }
+      return out;
+    } catch (error) {
+      ocLog(`[oc-server] listSessions: sessionQuery.listSessions failed: ${error instanceof Error ? error.message : String(error)}`);
+      return this.fallbackFilesystemScan(scope);
+    }
+  }
+
+  /** 回退：扫描文件系统获取会话列表 */
+  private async fallbackFilesystemScan(scope?: string | null): Promise<Array<Record<string, unknown>>> {
     const out: Array<Record<string, unknown>> = [];
     try {
       const sessionsRoot = process.env.DSH_OPENCODE_SESSION_ROOT
@@ -307,7 +359,6 @@ export class OcServer implements RouterContext {
           const dshId = match[1];
           const ocId = ocIdFromDsh(dshId);
           if (this.store.isDeleted(ocId)) continue;
-          // 获取 createdAt（文件 mtime）
           let createdAt = Date.now();
           try {
             const sessionFile = join(cwdDir, sd.name, "session.jsonl.zstd");
@@ -318,15 +369,12 @@ export class OcServer implements RouterContext {
           if (existing) {
             out.push(this.legacySession(existing));
           } else {
-            // DSH 有但兼容层未 hydrate：通过 inspect API 加载事件并 hydrate
             await this.hydrateFromFilesystem(dshId, createdAt, cwdDir, sd.name, out);
           }
         }
       }
     } catch (error) {
-      ocLog(`[oc-server] listSessions failed: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      this._listSessionsBusy = false;
+      ocLog(`[oc-server] fallbackFilesystemScan failed: ${error instanceof Error ? error.message : String(error)}`);
     }
     return out;
   }
