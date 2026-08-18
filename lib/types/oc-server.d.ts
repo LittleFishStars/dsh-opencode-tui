@@ -129,7 +129,7 @@ export declare class OcServer implements RouterContext {
      * 合并兼容层状态（含消息/tokens/agents），解决"读自己的而不是 DSH 的"。
      */
     listSessions(scope?: string | null): Promise<Array<Record<string, unknown>>>;
-    /** 回退：扫描文件系统获取会话列表 */
+    /** 回退：扫描文件系统获取会话列表（能找到全部会话，含两种目录格式）。 */
     private fallbackFilesystemScan;
     /** 通过 sessionPersistence.inspect 加载事件并 hydrate 到兼容层。 */
     private hydrateFromFilesystem;
