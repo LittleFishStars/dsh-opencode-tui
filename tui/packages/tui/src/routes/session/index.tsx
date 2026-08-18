@@ -1357,15 +1357,18 @@ export function Session() {
 
 function UserMessage(props: {
   message: UserMessage
-  parts: Part[]
+  parts?: Part[]
   onMouseUp: () => void
   index: number
   pending?: number
 }) {
   const ctx = use()
   const local = useLocal()
+  const sync = useSync()
+  // 直接从 store 订阅 parts，而非通过 prop 传入
+  const parts = createMemo(() => sync.data.part[props.message.id] ?? props.parts ?? [])
   const text = createMemo(() => {
-    const texts = props.parts
+    const texts = parts()
       .map((x) => {
         if (x.type === "text" && !x.synthetic) {
           return x.text
@@ -1375,7 +1378,7 @@ function UserMessage(props: {
       .filter(Boolean)
     return texts.join("\n\n")
   })
-  const files = createMemo(() => props.parts.flatMap((x) => (x.type === "file" ? [x] : [])))
+  const files = createMemo(() => parts().flatMap((x) => (x.type === "file" ? [x] : [])))
   const { theme } = useTheme()
   const [hover, setHover] = createSignal(false)
   const queued = createMemo(() => props.pending !== undefined && props.index > props.pending)
@@ -1383,7 +1386,7 @@ function UserMessage(props: {
   const queuedFg = createMemo(() => selectedForeground(theme, color()))
   const metadataVisible = createMemo(() => queued() || ctx.showTimestamps())
 
-  const compaction = createMemo(() => props.parts.find((x) => x.type === "compaction"))
+  const compaction = createMemo(() => parts().find((x) => x.type === "compaction"))
 
   return (
     <>
@@ -1460,13 +1463,16 @@ function UserMessage(props: {
   )
 }
 
-function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; last: boolean }) {
+function AssistantMessage(props: { message: AssistantMessage; parts?: Part[]; last: boolean }) {
   const ctx = use()
   const local = useLocal()
   const { theme } = useTheme()
   const sync = useSync()
   const messages = createMemo(() => sync.data.message[props.message.sessionID] ?? [])
   const model = createMemo(() => Model.name(ctx.providers(), props.message.providerID, props.message.modelID))
+  // 直接从 store 订阅 parts，而非通过 prop 传入（prop 只在父组件 For 循环重新渲染时才更新，
+  // 导致 block-end 设置 time.end 后 ReasoningPart 不重新渲染，thinking 不变 thought）
+  const parts = createMemo(() => sync.data.part[props.message.id] ?? props.parts ?? [])
 
   const final = createMemo(() => {
     return props.message.finish && !["tool-calls", "unknown"].includes(props.message.finish)
@@ -1485,13 +1491,13 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
 
   return (
     <>
-      <For each={props.parts}>
+      <For each={parts()}>
         {(part, index) => {
           const component = createMemo(() => PART_MAPPING[part.type as keyof typeof PART_MAPPING])
           return (
             <Show when={component()}>
               <Dynamic
-                last={index() === props.parts.length - 1}
+                last={index() === parts().length - 1}
                 component={component()}
                 part={part as any}
                 message={props.message}
@@ -1500,7 +1506,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
           )
         }}
       </For>
-      <Show when={props.parts.some((x) => x.type === "tool" && x.tool === "task")}>
+      <Show when={parts().some((x) => x.type === "tool" && x.tool === "task")}>
         <box paddingTop={1} paddingLeft={3}>
           <text fg={theme.text}>
             {childShortcut()}
@@ -1508,7 +1514,7 @@ function AssistantMessage(props: { message: AssistantMessage; parts: Part[]; las
             <Show
               when={
                 sync.data.capabilities.experimentalBackgroundSubagents &&
-                props.parts.some(
+                parts().some(
                   (x) =>
                     x.type === "tool" &&
                     x.tool === "task" &&
