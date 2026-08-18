@@ -304,8 +304,11 @@ export class OcServer implements RouterContext {
           // 批量读标题（同 dsh-tui 的 readTitleSnapshots）
           let titles = new Map<string, string>();
           try {
-            const observations = await sessionQuery.readTitleSnapshots(matched.map((r) => r.header.id));
-            ocLog(`[oc-server] DIAG listSessions: readTitleSnapshots returned ${observations.length} observations`);
+            const normalize = (id: string): string => (id.startsWith("session-") ? id.slice(8) : id);
+            const observations = await sessionQuery.readTitleSnapshots(matched.map((r) => normalize(r.header.id)));
+            const fulfilled = observations.filter((o) => o.status === "fulfilled");
+            const withTitle = fulfilled.filter((o) => o.value?.title?.title);
+            ocLog(`[oc-server] DIAG listSessions: readTitleSnapshots ${observations.length} obs, ${fulfilled.length} fulfilled, ${withTitle.length} with title`);
             titles = new Map(
               observations
                 .filter((o) => o.status === "fulfilled")
@@ -314,12 +317,14 @@ export class OcServer implements RouterContext {
           } catch (error) {
             ocLog(`[oc-server] readTitleSnapshots failed: ${error instanceof Error ? error.message : String(error)}`);
           }
+          // 统一会话 id：DSH 返回的 header.id 可能带 session- 前缀（目录名原样），
+          // 剥离为纯 UUID，与文件系统扫描、readTitleSnapshots 索引一致
+          const normalizeId = (id: string): string => (id.startsWith("session-") ? id.slice(8) : id);
           const out: Array<Record<string, unknown>> = [];
           for (const record of matched) {
             const header = record.header;
-            const dshId = header.id;
+            const dshId = normalizeId(header.id);
             const ocId = ocIdFromDsh(dshId);
-            ocLog(`[oc-server] DIAG session: id=${dshId.slice(0,8)} cwd=${header.cwd ?? "UNDEF"} title=${(titles.get(dshId) ?? "").slice(0,20)}`);
             if (this.store.isDeleted(ocId)) continue;
             const existing = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId);
             if (existing) {
