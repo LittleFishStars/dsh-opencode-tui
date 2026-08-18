@@ -89,4 +89,16 @@ export class SessionTitleCache {
   keys(): string[] {
     return [...this.map.keys()];
   }
+
+  /** 清理过期缓存：移除已不存在于文件系统的会话。 */
+  cleanup(existingIds: Set<string>): void {
+    let removed = 0;
+    for (const id of this.map.keys()) {
+      if (!existingIds.has(id)) {
+        this.map.delete(id);
+        removed++;
+      }
+    }
+    if (removed > 0) this.save();
+  }
 }

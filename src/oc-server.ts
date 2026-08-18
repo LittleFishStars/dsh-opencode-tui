@@ -326,8 +326,11 @@ export class OcServer implements RouterContext {
             const st = await stat(sessionFile);
             createdAt = st.mtimeMs;
           } catch {}
-          const existing = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId);
+          // 查找已有会话：兼容旧格式（session-<uuid>）和新格式（uuid）
+          const existing = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId || s.dshSessionId === `session-${dshId}`);
           if (existing) {
+            // 归一化旧会话的 dshSessionId（剥离 session- 前缀）
+            if (existing.dshSessionId?.startsWith("session-")) existing.dshSessionId = existing.dshSessionId.slice(8);
             out.push(this.legacySession(existing));
           } else {
             const state = this.store.getOrCreateSession(ocId, this.directory);
@@ -391,6 +394,8 @@ export class OcServer implements RouterContext {
       });
       await Promise.all(workers);
       this.titleCache.save();
+      // 清理已不存在于文件系统的缓存条目
+      this.titleCache.cleanup(new Set(pending.map((s) => s.dshId)));
       ocLog(`[oc-server] title cache saved (${this.titleCache.keys().length} entries)`);
     } catch (error) {
       ocLog(`[oc-server] loadSessionTitles failed: ${error instanceof Error ? error.message : String(error)}`);
@@ -496,8 +501,10 @@ export class OcServer implements RouterContext {
         for (const sd of sessionDirs) {
           if (!sd.isDirectory()) continue;
           const match = sd.name.match(/^session-(.+)$/) ?? sd.name.match(/^([0-9a-fA-F-]{36})$/);
-          if (!match || !match[1] || match[1] !== state.dshSessionId) continue;
-          await this.hydrateFromFilesystem(state.dshSessionId, state.createdAt, cwdDir, sd.name, []);
+      // 归一化 dshSessionId：旧会话可能带 session- 前缀，文件系统目录名不带前缀
+      const dshId = state.dshSessionId.startsWith('session-') ? state.dshSessionId.slice(8) : state.dshSessionId;
+          if (!match || !match[1] || match[1] !== dshId) continue;
+          await this.hydrateFromFilesystem(dshId, state.createdAt, cwdDir, sd.name, []);
           return;
         }
       }

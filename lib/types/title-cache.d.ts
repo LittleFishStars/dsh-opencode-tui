@@ -12,4 +12,6 @@ export declare class SessionTitleCache {
     set(dshId: string, title: string, mtime: number): void;
     /** 获取所有已缓存的会话 id。 */
     keys(): string[];
+    /** 清理过期缓存：移除已不存在于文件系统的会话。 */
+    cleanup(existingIds: Set<string>): void;
 }
