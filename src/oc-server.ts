@@ -337,10 +337,16 @@ export class OcServer implements RouterContext {
   private async hydrateFromFilesystem(dshId: string, createdAt: number, cwdDir: string, sessionDirName: string, out: Array<Record<string, unknown>>): Promise<void> {
     try {
       const sessionFile = join(cwdDir, sessionDirName, "session.jsonl.zstd");
-      const buf = await readFile(sessionFile).catch(() => null);
-      if (!buf) return;
-      const { execFileSync } = await import("node:child_process");
-      const raw = execFileSync("zstd", ["-d", "-c"], { input: buf, maxBuffer: 10 * 1024 * 1024 }).toString("utf-8");
+      const st = await stat(sessionFile).catch(() => null);
+      if (!st) return;
+      // 大会话解压后可能超过 100MB，用异步 execFile + 512MB maxBuffer
+      const { execFile } = await import("node:child_process");
+      const raw = await new Promise<string>((resolve, reject) => {
+        execFile("zstd", ["-d", "-c", sessionFile], { maxBuffer: 512 * 1024 * 1024 }, (err, stdout) => {
+          if (err) reject(err);
+          else resolve(stdout);
+        });
+      });
       const events: SessionEvent[] = [];
       for (const line of raw.split("\n")) {
         if (!line.trim()) continue;
