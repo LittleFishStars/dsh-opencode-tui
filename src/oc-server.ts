@@ -304,7 +304,7 @@ export class OcServer implements RouterContext {
           // 批量读标题（同 dsh-tui 的 readTitleSnapshots）
           let titles = new Map<string, string>();
           try {
-            const normalize = (id: string): string => (id.startsWith("session-") ? id.slice(8) : id);
+            const normalize = (id: string | undefined): string => (id ? (id.startsWith("session-") ? id.slice(8) : id) : "");
             const observations = await sessionQuery.readTitleSnapshots(matched.map((r) => normalize(r.header.id)));
             const fulfilled = observations.filter((o) => o.status === "fulfilled");
             const withTitle = fulfilled.filter((o) => o.value?.title?.title);
@@ -315,15 +315,19 @@ export class OcServer implements RouterContext {
                 .map((o) => [o.sessionId, o.value?.title?.title ?? o.value?.title?.text ?? ""]),
             );
           } catch (error) {
-            ocLog(`[oc-server] readTitleSnapshots failed: ${error instanceof Error ? error.message : String(error)}`);
+            ocLog(`[oc-server] DIAG readTitleSnapshots failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
           }
           // 统一会话 id：DSH 返回的 header.id 可能带 session- 前缀（目录名原样），
           // 剥离为纯 UUID，与文件系统扫描、readTitleSnapshots 索引一致
-          const normalizeId = (id: string): string => (id.startsWith("session-") ? id.slice(8) : id);
+          const normalizeId = (id: string | undefined): string => {
+            if (!id) return "";
+            return id.startsWith("session-") ? id.slice(8) : id;
+          };
           const out: Array<Record<string, unknown>> = [];
           for (const record of matched) {
             const header = record.header;
             const dshId = normalizeId(header.id);
+            if (!dshId) continue;
             const ocId = ocIdFromDsh(dshId);
             if (this.store.isDeleted(ocId)) continue;
             const existing = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId);
@@ -343,7 +347,7 @@ export class OcServer implements RouterContext {
           return out;
         }
       } catch (error) {
-        ocLog(`[oc-server] listSessions sessionQuery failed: ${error instanceof Error ? error.message : String(error)}`);
+        ocLog(`[oc-server] DIAG sessionQuery branch failed: ${error instanceof Error ? error.stack ?? error.message : String(error)}`);
       }
     }
     ocLog(`[oc-server] DIAG listSessions: falling back to filesystem scan`);
