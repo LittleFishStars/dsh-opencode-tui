@@ -43,4 +43,11 @@ export interface RouterContext {
 
   /** 删除会话（DSH 侧数据 + 内存 + 通知）。 */
   deleteSession(sessionId: string): Promise<boolean>;
+
+  /**
+   * 查询 DSH 会话列表（直查 sessionQuery，而非仅读兼容层内存）。
+   * 返回按工作目录过滤的 opencode 会话形状，合并兼容层状态。
+   * 解决"会话列表读自己的而不是 DSH 的"——以 DSH 为权威数据源。
+   */
+  listSessions(scope?: string | null): Promise<Array<Record<string, unknown>>>;
 }

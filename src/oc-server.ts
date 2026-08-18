@@ -19,7 +19,7 @@ import type { Context } from "@deepseek-ai/cordis";
 import type { SessionEvent } from "@deepseek-ai/dsh-session";
 import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import { legacyModelFromV2, type LegacyModel, type ModelRef } from "./oc-proto.js";
-import { SessionStore, projectIdOf } from "./session-store.js";
+import { SessionStore, ocIdFromDsh, projectIdOf } from "./session-store.js";
 import { DshEventMapper } from "./event-mapper.js";
 import { readBody, sendJson } from "./http-util.js";
 import { ocLog } from "./logging.js";
@@ -51,6 +51,7 @@ export interface OcServerOptions {
       sessionId: string;
       title: string;
       preset?: string;
+      createdAt: number;
       views: import("./projection.js").MessageView[];
       todos: Array<{ id: string; content: string; status: string; priority: string }>;
       diffs: Array<{ file: string; before: string; after: string; additions: number; deletions: number }>;
@@ -67,11 +68,13 @@ export class OcServer implements RouterContext {
   readonly events: DshEventMapper;
   readonly directory: string;
 
+  private ctx: Context;
   private opts: OcServerOptions;
   private http: ReturnType<typeof createServer>;
   private port = 0;
 
   constructor(ctx: Context, opts: OcServerOptions) {
+    this.ctx = ctx;
     this.opts = opts;
     this.directory = opts.directory;
     this.store = new SessionStore(ctx, {
@@ -242,6 +245,48 @@ export class OcServer implements RouterContext {
       }
     }
     return this.store.removeSession(sessionId);
+  }
+
+  /**
+   * 查询 DSH 会话列表（直查 sessionQuery，以 DSH 为权威数据源）。
+   * 合并兼容层状态（含消息/tokens/agents），解决"读自己的而不是 DSH 的"。
+   */
+  async listSessions(scope?: string | null): Promise<Array<Record<string, unknown>>> {
+    const out: Array<Record<string, unknown>> = [];
+    try {
+      const records = await this.ctx.sessionQuery.listSessions();
+      for (const record of records) {
+        const header = record.header;
+        // 按工作目录过滤（对齐 dsh-web 的项目视图）
+        if (header.cwd && this.directory && header.cwd !== this.directory) continue;
+        // 按 dshSessionId 反查兼容层状态（POST /session 创建的 compat ID 与 DSH ID 不同，
+        // 不能靠 ocIdFromDsh 反向推算；需遍历匹配 dshSessionId）。
+        const state = [...this.store.sessions.values()].find((s) => s.dshSessionId === header.id);
+        if (state) {
+          if (this.store.isDeleted(state.id)) continue;
+          out.push(this.legacySession(state));
+        } else {
+          // DSH 有但兼容层未 hydrate（可能 inspect 失败、或启动后其他进程新建）：
+          // 以 DSH header 基本信息创建占位状态并加入兼容层，保持两者同步。
+          // 否则后续删除/进入会话时找不到该 session（"读自己的而不是 DSH 的"）。
+          const placeholder = this.store.getOrCreateSession(ocIdFromDsh(header.id), header.cwd ?? this.directory);
+          placeholder.dshSessionId = header.id;
+          placeholder.createdAt = header.createdAt;
+          placeholder.updatedAt = header.createdAt;
+          this.store.touchSession(placeholder);
+          out.push(this.legacySession(placeholder));
+        }
+      }
+    } catch (error) {
+      ocLog(`[oc-server] listSessions failed: ${error instanceof Error ? error.message : String(error)}`);
+      // 失败回退到兼容层内存
+      for (const state of this.store.sessions.values()) {
+        if (scope === "project" && state.directory !== this.directory) continue;
+        if (this.store.isDeleted(state.id)) continue;
+        out.push(this.legacySession(state));
+      }
+    }
+    return out;
   }
 
   // ── HTTP 入口与路由分发 ─────────────────────────────────────────────────

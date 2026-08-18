@@ -116,7 +116,6 @@ function apply(ctx: Context, config: PluginConfig) {
         if (location) {
           await import("node:fs/promises").then(async (fs) => {
             await fs.rm(location.path, { recursive: false, force: true });
-            // 清理空父目录（会话目录本身）
             await fs.rm(dirname(location.path), { recursive: false, force: true }).catch(() => undefined);
           });
           dbgLog(`deleted artifact ${location.path} for session ${dshSessionId}`);
@@ -143,6 +142,7 @@ function apply(ctx: Context, config: PluginConfig) {
       sessionId: string;
       title: string;
       preset?: string;
+      createdAt: number;
       views: MessageView[];
       todos: Array<{ id: string; content: string; status: string; priority: string }>;
       diffs: Array<{ file: string; before: string; after: string; additions: number; deletions: number }>;
@@ -152,6 +152,7 @@ function apply(ctx: Context, config: PluginConfig) {
       sessionId: string;
       title: string;
       preset?: string;
+      createdAt: number;
       views: MessageView[];
       todos: Array<{ id: string; content: string; status: string; priority: string }>;
       diffs: Array<{ file: string; before: string; after: string; additions: number; deletions: number }>;
@@ -172,6 +173,7 @@ function apply(ctx: Context, config: PluginConfig) {
             sessionId: header.id,
             title: folded.title,
             preset: folded.preset,
+            createdAt: header.createdAt,
             views: projectEvents(inspection.events),
             todos: todosFromEvents(inspection.events),
             diffs: diffsFromEvents(inspection.events),

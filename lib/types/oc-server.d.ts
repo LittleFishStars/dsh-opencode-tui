@@ -50,6 +50,7 @@ export interface OcServerOptions {
         sessionId: string;
         title: string;
         preset?: string;
+        createdAt: number;
         views: import("./projection.js").MessageView[];
         todos: Array<{
             id: string;
@@ -72,6 +73,7 @@ export declare class OcServer implements RouterContext {
     readonly store: SessionStore;
     readonly events: DshEventMapper;
     readonly directory: string;
+    private ctx;
     private opts;
     private http;
     private port;
@@ -122,5 +124,10 @@ export declare class OcServer implements RouterContext {
      * 成功后移除内存状态并通知 TUI。
      */
     deleteSession(sessionId: string): Promise<boolean>;
+    /**
+     * 查询 DSH 会话列表（直查 sessionQuery，以 DSH 为权威数据源）。
+     * 合并兼容层状态（含消息/tokens/agents），解决"读自己的而不是 DSH 的"。
+     */
+    listSessions(scope?: string | null): Promise<Array<Record<string, unknown>>>;
     private handle;
 }

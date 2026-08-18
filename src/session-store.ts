@@ -36,6 +36,7 @@ export interface SessionStoreOptions {
       sessionId: string;
       title: string;
       preset?: string;
+      createdAt: number;
       views: import("./projection.js").MessageView[];
       todos: Array<{ id: string; content: string; status: string; priority: string }>;
       diffs: Array<{ file: string; before: string; after: string; additions: number; deletions: number }>;
@@ -46,6 +47,8 @@ export interface SessionStoreOptions {
 export class SessionStore {
   readonly sessions = new Map<string, SessionState>();
   readonly globalSse = new Set<ServerResponse>();
+  /** 已被兼容层删除的会话 id（DSH 侧删除可能延迟同步，需从列表过滤）。 */
+  private deleted = new Set<string>();
   private opts: SessionStoreOptions;
   private modelCache: ModelRef | undefined;
   /** 最近一次请求头里的模型上下文窗口（maxTokens；供 limit.context 百分比计算） */
@@ -70,7 +73,7 @@ export class SessionStore {
     const list = (await this.opts.listDshSessions?.()) ?? [];
     for (const item of list) {
       try {
-        this.hydrateSession(item.sessionId, item.title, item.preset, item.views, item.todos ?? [], item.diffs ?? []);
+        this.hydrateSession(item.sessionId, item.title, item.preset, item.views, item.todos ?? [], item.diffs ?? [], item.createdAt);
       } catch (error) {
         ocLog(`[oc-server] hydrate ${item.sessionId} failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -124,6 +127,7 @@ export class SessionStore {
     views: import("./projection.js").MessageView[],
     todos: Array<{ id: string; content: string; status: string; priority: string }>,
     diffs: Array<{ file: string; before: string; after: string; additions: number; deletions: number }>,
+    dshCreatedAt: number,
   ): void {
     const ocSessionId = ocIdFromDsh(dshSessionId);
     const existing = this.sessions.get(ocSessionId);
@@ -134,10 +138,14 @@ export class SessionStore {
     if (todos.length > 0) state.todos = todos;
     if (diffs.length > 0) state.diffs = diffs;
     if (existing) return;
+    // 使用 DSH 会话的真实创建时间（而非 compat 层启动时刻），
+    // 无消息时 updatedAt 也回退到 createdAt，避免空会话全部进 "Today"。
+    state.createdAt = dshCreatedAt;
     state.messages = viewsToLegacyMessages(ocSessionId, views, this.selection(), state.currentAgent);
-    for (const m of state.messages) {
-      state.updatedAt = Math.max(state.updatedAt, m.info.time.updated ?? m.info.time.created);
-    }
+    state.updatedAt = state.messages.reduce(
+      (max, m) => Math.max(max, m.info.time.updated ?? m.info.time.created),
+      dshCreatedAt,
+    );
   }
 
   /** 删除会话：从内存移除 + 通知 TUI。返回是否成功。 */
@@ -145,6 +153,7 @@ export class SessionStore {
     const state = this.sessions.get(sessionId);
     if (!state) return true; // 已不存在视为成功
     this.sessions.delete(sessionId);
+    this.deleted.add(sessionId);
     // 通知 TUI：从会话列表移除（sync.data.session 的 session.deleted 分支）
     this.pushEvent(
       {
@@ -155,6 +164,11 @@ export class SessionStore {
     );
     ocLog(`[oc-server] deleted session ${sessionId}`);
     return true;
+  }
+
+  /** 某会话是否已被兼容层删除（用于 listSessions 过滤）。 */
+  isDeleted(sessionId: string): boolean {
+    return this.deleted.has(sessionId);
   }
 
   // ── 查询 ─────────────────────────────────────────────────────────────────

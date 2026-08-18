@@ -33,6 +33,7 @@ export interface SessionStoreOptions {
         sessionId: string;
         title: string;
         preset?: string;
+        createdAt: number;
         views: import("./projection.js").MessageView[];
         todos: Array<{
             id: string;
@@ -52,6 +53,8 @@ export interface SessionStoreOptions {
 export declare class SessionStore {
     readonly sessions: Map<string, SessionState>;
     readonly globalSse: Set<ServerResponse<import("http").IncomingMessage>>;
+    /** 已被兼容层删除的会话 id（DSH 侧删除可能延迟同步，需从列表过滤）。 */
+    private deleted;
     private opts;
     private modelCache;
     /** 最近一次请求头里的模型上下文窗口（maxTokens；供 limit.context 百分比计算） */
@@ -79,9 +82,11 @@ export declare class SessionStore {
         after: string;
         additions: number;
         deletions: number;
-    }>): void;
+    }>, dshCreatedAt: number): void;
     /** 删除会话：从内存移除 + 通知 TUI。返回是否成功。 */
     removeSession(sessionId: string): boolean;
+    /** 某会话是否已被兼容层删除（用于 listSessions 过滤）。 */
+    isDeleted(sessionId: string): boolean;
     findByDsh(dshSessionId: string): SessionState | undefined;
     findMessage(state: SessionState, messageId: string): import("./types.js").LegacyMessage | undefined;
     getSessionIdByDsh(dshSessionId: string): string | undefined;

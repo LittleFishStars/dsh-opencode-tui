@@ -186,7 +186,8 @@ export async function handleApi(
     return true;
   }
   if (path === "/api/session" && method === "GET") {
-    const list = Array.from(ctx.store.sessions.values()).map((s) => ctx.store.infoOf(s));
+    // 直查 DSH sessionQuery（权威数据源），合并兼容层状态
+    const list = await ctx.listSessions(url.searchParams.get("scope"));
     sendJson(res, 200, located({ data: list, cursor: {} }, ctx.directory));
     return true;
   }
