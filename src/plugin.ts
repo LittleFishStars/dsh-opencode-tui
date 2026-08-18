@@ -124,7 +124,8 @@ function apply(ctx: Context, config: PluginConfig) {
         const sessionDirs = await fs.readdir(cwdDir, { withFileTypes: true }).catch(() => []);
         for (const sd of sessionDirs) {
           if (!sd.isDirectory()) continue;
-          const match = sd.name.match(/^session-(.+)$/);
+          // 会话目录名两种格式：session-<uuid> 或直接 <uuid>
+          const match = sd.name.match(/^session-(.+)$/) ?? sd.name.match(/^([0-9a-fA-F-]{36})$/);
           const matchedId = match ? match[1] : undefined;
           if (!matchedId || matchedId !== targetId) continue;
           const sessionDir = join(cwdDir, sd.name);
