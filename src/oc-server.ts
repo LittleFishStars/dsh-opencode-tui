@@ -319,6 +319,7 @@ export class OcServer implements RouterContext {
             const header = record.header;
             const dshId = header.id;
             const ocId = ocIdFromDsh(dshId);
+            ocLog(`[oc-server] DIAG session: id=${dshId.slice(0,8)} cwd=${header.cwd ?? "UNDEF"} title=${(titles.get(dshId) ?? "").slice(0,20)}`);
             if (this.store.isDeleted(ocId)) continue;
             const existing = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId);
             if (existing) {
