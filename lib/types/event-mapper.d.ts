@@ -21,6 +21,10 @@ export interface DshEventMapperOptions {
     }>) => void;
     /** 文件修改类工具调用 → 会话 diff 列表（侧边栏 Modified Files 区） */
     onDiff?: (state: SessionState, file: string) => void;
+    /** 会话标题缓存（session/title 事件时更新）。 */
+    titleCache?: {
+        set(dshId: string, title: string, mtime: number): void;
+    };
 }
 export declare class DshEventMapper {
     private store;

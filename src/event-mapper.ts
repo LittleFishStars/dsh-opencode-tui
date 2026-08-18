@@ -22,6 +22,10 @@ export interface DshEventMapperOptions {
   onTodos?: (state: SessionState, todos: Array<{ content?: string; status?: string }>) => void;
   /** 文件修改类工具调用 → 会话 diff 列表（侧边栏 Modified Files 区） */
   onDiff?: (state: SessionState, file: string) => void;
+  /** 会话标题缓存（session/title 事件时更新）。 */
+  titleCache?: {
+    set(dshId: string, title: string, mtime: number): void;
+  };
 }
 
 function userTextFromMessage(message: { content?: Array<{ type?: string; text?: string }> }): string {
@@ -529,6 +533,7 @@ export class DshEventMapper {
           const data = (event as unknown as { data?: { title?: string } }).data;
           if (data?.title) {
             state.title = data.title;
+            if (state.dshSessionId) this.opts.titleCache?.set(state.dshSessionId, data.title, Date.now());
             this.store.pushSessionEvent(state, {
               type: "session.updated",
               properties: { info: this.store.infoOf(state) },

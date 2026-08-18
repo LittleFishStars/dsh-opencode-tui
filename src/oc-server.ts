@@ -28,6 +28,7 @@ import { SessionStore, ocIdFromDsh, projectIdOf } from "./session-store.js";
 import { DshEventMapper } from "./event-mapper.js";
 import { readBody, sendJson } from "./http-util.js";
 import { ocLog } from "./logging.js";
+import { SessionTitleCache } from "./title-cache.js";
 import { type SessionState } from "./types.js";
 import { handleApi } from "./routes/api.js";
 import { projectEvents, foldSessionMeta, todosFromEvents, diffsFromEvents } from "./projection.js";
@@ -105,6 +106,7 @@ export class OcServer implements RouterContext {
   private ctx: Context;
   private opts: OcServerOptions;
   private http: ReturnType<typeof createServer>;
+  private titleCache = new SessionTitleCache();
   private port = 0;
 
   constructor(ctx: Context, opts: OcServerOptions) {
@@ -117,7 +119,9 @@ export class OcServer implements RouterContext {
       listModels: opts.listModels,
       listDshSessions: opts.listDshSessions,
     });
-    this.events = new DshEventMapper(this.store);
+    this.events = new DshEventMapper(this.store, {
+      titleCache: { set: (id, title, mtime) => this.titleCache.set(id, title, mtime) },
+    });
     this.http = createServer((req, res) => void this.handle(req, res).catch(() => sendJson(res, 500, { _tag: "UnknownError", message: "internal error" })));
   }
 
@@ -128,6 +132,9 @@ export class OcServer implements RouterContext {
     ocLog(`[oc-server] listening on ${this.url}`);
     // 预热模型缓存 + 从 DSH 持久层重建历史会话（异步，不阻塞 TUI 启动）
     this.store.init();
+    // 启动时加载会话标题缓存 + 后台解压提取新会话标题
+    this.titleCache.load();
+    void this.loadSessionTitles();
     return this.port;
   }
 
@@ -292,9 +299,7 @@ export class OcServer implements RouterContext {
     return this.fallbackFilesystemScan(scope);
   }
 
-  /** 回退：扫描文件系统获取会话列表（能找到全部会话，含两种目录格式）。
-   *  快速返回元信息（id/createdAt），标题后台异步提取后推送更新，
-   *  避免 26 个大会话串行/并行解压导致 TUI 请求超时。 */
+  /** 回退：扫描文件系统获取会话列表（从标题缓存读取，毫秒级响应）。 */
   private async fallbackFilesystemScan(scope?: string | null): Promise<Array<Record<string, unknown>>> {
     const out: Array<Record<string, unknown>> = [];
     try {
@@ -302,8 +307,6 @@ export class OcServer implements RouterContext {
         ? process.env.DSH_OPENCODE_SESSION_ROOT
         : join(process.env.DSH_HOME ?? homedir(), ".dsh", "sessions");
       const entries = await readdir(sessionsRoot, { withFileTypes: true }).catch(() => []);
-      // 收集会话元信息（快，不读文件内容）
-      const pending: Array<{ dshId: string; ocId: string; createdAt: number; file: string }> = [];
       for (const entry of entries) {
         if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
         if (entry.name !== encodeCwdSlug(this.directory)) continue;
@@ -323,50 +326,74 @@ export class OcServer implements RouterContext {
             const st = await stat(sessionFile);
             createdAt = st.mtimeMs;
           } catch {}
-          pending.push({ dshId, ocId, createdAt, file: sessionFile });
+          const existing = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId);
+          if (existing) {
+            out.push(this.legacySession(existing));
+          } else {
+            const state = this.store.getOrCreateSession(ocId, this.directory);
+            state.dshSessionId = dshId;
+            // 从缓存读取标题（启动时已后台加载）；缓存未命中则为空
+            state.title = this.titleCache.get(dshId, createdAt) ?? "";
+            state.createdAt = createdAt;
+            state.updatedAt = createdAt;
+            out.push(this.legacySession(state));
+          }
         }
       }
-      // 组装：已 hydrate 的用完整状态，否则轻量创建（title 后台补）
-      for (const s of pending) {
-        if (this.store.isDeleted(s.ocId)) continue;
-        const existing = [...this.store.sessions.values()].find((st) => st.dshSessionId === s.dshId);
-        if (existing) {
-          out.push(this.legacySession(existing));
-        } else {
-          const state = this.store.getOrCreateSession(s.ocId, this.directory);
-          state.dshSessionId = s.dshId;
-          state.createdAt = s.createdAt;
-          state.updatedAt = s.createdAt;
-          out.push(this.legacySession(state));
-        }
-      }
-      // 后台异步提取标题（不阻塞响应；提取后更新 state + announce 推送）
-      void this.extractTitlesInBackground(pending);
     } catch (error) {
       ocLog(`[oc-server] fallbackFilesystemScan failed: ${error instanceof Error ? error.message : String(error)}`);
     }
     return out;
   }
 
-  /** 后台提取会话标题：并行解压（并发 4），提取后更新 state.title 并推送 session.updated。 */
-  private async extractTitlesInBackground(sessions: Array<{ dshId: string; ocId: string; createdAt: number; file: string }>): Promise<void> {
+  /** 启动时后台加载会话标题：扫描文件系统，对缓存未命中的会话解压提取标题。 */
+  private async loadSessionTitles(): Promise<void> {
     try {
+      const sessionsRoot = process.env.DSH_OPENCODE_SESSION_ROOT
+        ? process.env.DSH_OPENCODE_SESSION_ROOT
+        : join(process.env.DSH_HOME ?? homedir(), ".dsh", "sessions");
+      const entries = await readdir(sessionsRoot, { withFileTypes: true }).catch(() => []);
+      const pending: Array<{ dshId: string; file: string; mtime: number }> = [];
+      for (const entry of entries) {
+        if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
+        if (entry.name !== encodeCwdSlug(this.directory)) continue;
+        const cwdDir = join(sessionsRoot, entry.name);
+        const sessionDirs = await readdir(cwdDir, { withFileTypes: true }).catch(() => []);
+        for (const sd of sessionDirs) {
+          if (!sd.isDirectory()) continue;
+          const match = sd.name.match(/^session-(.+)$/) ?? sd.name.match(/^([0-9a-fA-F-]{36})$/);
+          if (!match || !match[1]) continue;
+          const dshId = match[1];
+          const sessionFile = join(cwdDir, sd.name, "session.jsonl.zstd");
+          let mtime = Date.now();
+          try {
+            const st = await stat(sessionFile);
+            mtime = st.mtimeMs;
+          } catch {
+            continue;
+          }
+          // 缓存命中且 mtime 未变则跳过
+          if (this.titleCache.get(dshId, mtime) !== undefined) continue;
+          pending.push({ dshId, file: sessionFile, mtime });
+        }
+      }
+      if (pending.length === 0) return;
+      ocLog(`[oc-server] loading titles for ${pending.length} uncached sessions...`);
+      // 并行提取（并发 4）
       const concurrency = 4;
       let index = 0;
-      const workers = Array.from({ length: Math.min(concurrency, sessions.length) }, async () => {
-        while (index < sessions.length) {
-          const s = sessions[index++]!;
+      const workers = Array.from({ length: Math.min(concurrency, pending.length) }, async () => {
+        while (index < pending.length) {
+          const s = pending[index++]!;
           const title = await this.extractSessionTitle(s.file);
-          if (!title) continue;
-          const state = this.store.sessions.get(s.ocId);
-          if (!state || state.title) continue;
-          state.title = title;
-          this.store.announceSession(state);
+          this.titleCache.set(s.dshId, title, s.mtime);
         }
       });
       await Promise.all(workers);
+      this.titleCache.save();
+      ocLog(`[oc-server] title cache saved (${this.titleCache.keys().length} entries)`);
     } catch (error) {
-      ocLog(`[oc-server] extractTitlesInBackground failed: ${error instanceof Error ? error.message : String(error)}`);
+      ocLog(`[oc-server] loadSessionTitles failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
