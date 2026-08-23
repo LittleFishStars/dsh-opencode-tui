@@ -108,6 +108,8 @@ export class OcServer implements RouterContext {
   private http: ReturnType<typeof createServer>;
   readonly titleCache = new SessionTitleCache();
   private port = 0;
+  /** 当前目录活跃的 DSH 会话 id：无 resumeSessionId 时复用，避免每条消息创建新会话 */
+  private currentDshSessionId: string | undefined;
 
   constructor(ctx: Context, opts: OcServerOptions) {
     this.ctx = ctx;
@@ -237,11 +239,13 @@ export class OcServer implements RouterContext {
 
   /** 触发 DSH agent（preset/model 随消息传递）并绑定会话、通知变更。 */
   runPrompt(state: SessionState, text: string, opts: { preset?: string }): void {
+    // 无 dshSessionId 时复用当前目录的活跃会话，避免每条消息创建新会话
+    const resumeId = state.dshSessionId ?? this.currentDshSessionId;
     void this.opts
       .onPrompt(
         text,
         {
-          resumeSessionId: state.dshSessionId,
+          resumeSessionId: resumeId,
           preset: opts.preset,
           model: state.currentModel,
         },
@@ -268,6 +272,8 @@ export class OcServer implements RouterContext {
       state.dshSessionId = dshSessionId;
       state.updatedAt = Date.now();
     }
+    // 更新当前目录活跃会话，后续消息复用
+    this.currentDshSessionId = dshSessionId;
   }
 
   /**
@@ -285,6 +291,10 @@ export class OcServer implements RouterContext {
         ocLog(`[oc-server] delete session ${sessionId} dsh side failed: ${error instanceof Error ? error.message : String(error)}`);
         return false;
       }
+    }
+    // 删除的是当前活跃会话时，清除追踪以便后续消息创建新会话
+    if (state.dshSessionId === this.currentDshSessionId) {
+      this.currentDshSessionId = undefined;
     }
     return this.store.removeSession(sessionId);
   }
