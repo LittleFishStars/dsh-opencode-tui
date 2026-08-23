@@ -318,6 +318,8 @@ export class OcServer implements RouterContext {
         : join(process.env.DSH_HOME ?? homedir(), ".dsh", "sessions");
       ocLog(`[oc-server] hydrateOnDemand: root=${sessionsRoot} slug=${encodeCwdSlug(this.directory)}`);
       const entries = await readdir(sessionsRoot, { withFileTypes: true }).catch(() => []);
+      // 收集候选会话（含 mtime 用于排序/过滤）
+      const candidates: Array<{ dshId: string; ocId: string; createdAt: number }> = [];
       for (const entry of entries) {
         if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
         if (entry.name !== encodeCwdSlug(this.directory)) continue;
@@ -337,24 +339,33 @@ export class OcServer implements RouterContext {
             const st = await stat(sessionFile);
             createdAt = st.mtimeMs;
           } catch {}
-          // 有活跃会话时只显示活跃会话（避免 TUI 每条消息创建新会话导致列表爆炸）
-          const currentId = this.currentDshSessionId?.startsWith("session-") ? this.currentDshSessionId.slice(8) : this.currentDshSessionId;
-          if (currentId && dshId !== currentId) continue;
-          // 查找已有会话：兼容旧格式（session-<uuid>）和新格式（uuid）
-          const existing = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId || s.dshSessionId === `session-${dshId}`);
-          if (existing) {
-            // 归一化旧会话的 dshSessionId（剥离 session- 前缀）
-            if (existing.dshSessionId?.startsWith("session-")) existing.dshSessionId = existing.dshSessionId.slice(8);
-            out.push(this.legacySession(existing));
-          } else {
-            const state = this.store.getOrCreateSession(ocId, this.directory);
-            state.dshSessionId = dshId;
-            // 从缓存读取标题（启动时已后台加载）；缓存未命中则为空
-            state.title = this.titleCache.get(dshId, createdAt) ?? "";
-            state.createdAt = createdAt;
-            state.updatedAt = createdAt;
-            out.push(this.legacySession(state));
-          }
+          // 收集候选会话（含 mtime 用于排序/过滤）
+          candidates.push({ dshId, ocId, createdAt });
+        }
+      }
+      // 过滤：有活跃会话只显示活跃会话；否则只显示最近 2 个（对齐 web 界面）
+      const currentId = this.currentDshSessionId?.startsWith("session-") ? this.currentDshSessionId.slice(8) : this.currentDshSessionId;
+      let filtered = candidates;
+      if (currentId) {
+        filtered = candidates.filter((c) => c.dshId === currentId);
+      } else {
+        filtered = candidates.sort((a, b) => b.createdAt - a.createdAt).slice(0, 2);
+      }
+      for (const c of filtered) {
+        // 查找已有会话：兼容旧格式（session-<uuid>）和新格式（uuid）
+        const existing = [...this.store.sessions.values()].find((s) => s.dshSessionId === c.dshId || s.dshSessionId === `session-${c.dshId}`);
+        if (existing) {
+          // 归一化旧会话的 dshSessionId（剥离 session- 前缀）
+          if (existing.dshSessionId?.startsWith("session-")) existing.dshSessionId = existing.dshSessionId.slice(8);
+          out.push(this.legacySession(existing));
+        } else {
+          const state = this.store.getOrCreateSession(c.ocId, this.directory);
+          state.dshSessionId = c.dshId;
+          // 从缓存读取标题（启动时已后台加载）；缓存未命中则为空
+          state.title = this.titleCache.get(c.dshId, c.createdAt) ?? "";
+          state.createdAt = c.createdAt;
+          state.updatedAt = c.createdAt;
+          out.push(this.legacySession(state));
         }
       }
     } catch (error) {
