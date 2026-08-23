@@ -5,7 +5,14 @@
  * 通过 RouterContext 访问会话存储与消息发送能力。
  */
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { ocId, type ModelRef } from "../oc-proto.js";
+
+/** 将 cwd 编码为会话目录名格式：/home/ylxc/Projects → --home-ylxc-Projects-- */
+function encodeCwdSlug(cwd: string): string {
+  return "-" + cwd.replace(/\//g, "-") + "--";
+}
 import { readBody, safeParse, sendJson, sseHeaders } from "../http-util.js";
 import { PERMISSION_AGENTS, type LegacyMessageInfo, type SessionState } from "../types.js";
 import { ocLog } from "../logging.js";
