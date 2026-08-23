@@ -469,8 +469,9 @@ export class OcServer implements RouterContext {
         if (!line.trim()) continue;
         try { events.push(JSON.parse(line) as SessionEvent); } catch {}
       }
-      if (events.length === 0) return;
+      if (events.length === 0) { ocLog(`[oc-server] hydrateFromFile: no events`); return; }
       const views = projectEvents(events);
+      ocLog(`[oc-server] hydrateFromFile: ${events.length} events → ${views.length} views`);
       const folded = foldSessionMeta(dshId, createdAt, events);
       const todos = todosFromEvents(events);
       const diffs = diffsFromEvents(events);
