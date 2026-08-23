@@ -362,7 +362,11 @@ export class OcServer implements RouterContext {
           const state = this.store.getOrCreateSession(c.ocId, this.directory);
           state.dshSessionId = c.dshId;
           // 从缓存读取标题（启动时已后台加载）；缓存未命中则为空
-          state.title = this.titleCache.get(c.dshId, c.createdAt) ?? "";
+          const cachedTitle = this.titleCache.get(c.dshId, c.createdAt);
+          if (cachedTitle === undefined) {
+            ocLog(`[oc-server] DIAG title cache MISS: dshId=${c.dshId.slice(0,8)} mtime=${c.createdAt} cacheKeys=${this.titleCache.keys().length}`);
+          }
+          state.title = cachedTitle ?? "";
           state.createdAt = c.createdAt;
           state.updatedAt = c.createdAt;
           out.push(this.legacySession(state));
@@ -419,8 +423,6 @@ export class OcServer implements RouterContext {
       });
       await Promise.all(workers);
       this.titleCache.save();
-      // 清理已不存在于文件系统的缓存条目
-      this.titleCache.cleanup(new Set(pending.map((s) => s.dshId)));
       ocLog(`[oc-server] title cache saved (${this.titleCache.keys().length} entries, ${pending.length} extracted)`);
     } catch (error) {
       ocLog(`[oc-server] loadSessionTitles failed: ${error instanceof Error ? error.message : String(error)}`);
