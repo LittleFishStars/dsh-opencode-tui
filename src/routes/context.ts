@@ -53,4 +53,7 @@ export interface RouterContext {
 
   /** 按需加载会话完整消息（用户进入会话时从文件系统 hydrate）。 */
   hydrateSessionOnDemand(state: import("../types.js").SessionState): Promise<void>;
+
+  /** 会话标题缓存（启动时加载，避免每次解压）。 */
+  titleCache: { keys(): string[] };
 }

@@ -106,7 +106,7 @@ export class OcServer implements RouterContext {
   private ctx: Context;
   private opts: OcServerOptions;
   private http: ReturnType<typeof createServer>;
-  private titleCache = new SessionTitleCache();
+  readonly titleCache = new SessionTitleCache();
   private port = 0;
 
   constructor(ctx: Context, opts: OcServerOptions) {

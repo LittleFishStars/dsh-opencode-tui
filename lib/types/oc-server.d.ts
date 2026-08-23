@@ -21,6 +21,7 @@ import type { ModelSelection } from "@deepseek-ai/dsh-agent";
 import { type LegacyModel, type ModelRef } from "./oc-proto.js";
 import { SessionStore } from "./session-store.js";
 import { DshEventMapper } from "./event-mapper.js";
+import { SessionTitleCache } from "./title-cache.js";
 import { type SessionState } from "./types.js";
 import type { RouterContext } from "./routes/context.js";
 export interface OcServerOptions {
@@ -76,7 +77,7 @@ export declare class OcServer implements RouterContext {
     private ctx;
     private opts;
     private http;
-    private titleCache;
+    readonly titleCache: SessionTitleCache;
     private port;
     constructor(ctx: Context, opts: OcServerOptions);
     start(): Promise<number>;
