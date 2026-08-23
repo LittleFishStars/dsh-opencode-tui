@@ -214,6 +214,8 @@ function apply(ctx: Context, config: PluginConfig) {
       // 单活跃 agent：同一会话（resumeSessionId 匹配当前）直接 followup，
       // 否则释放旧 agent 后 resume/新建。不能对 live 会话 resume（DSH
       // persistence 拒绝 "cannot prepare session while it is live"）。
+      const activeSid = activeManager?.current?.sessionId;
+      dbgLog(`[plugin] onPrompt: resumeId=${opts.resumeSessionId?.slice(0,12) ?? "UNDEF"} activeSid=${activeSid?.slice(0,12) ?? "UNDEF"} reuse=${activeSid === opts.resumeSessionId}`);
       if (activeManager?.current && activeManager.current.sessionId === opts.resumeSessionId) {
         const owned = activeManager.current;
         hooks.onSession(owned.sessionId);

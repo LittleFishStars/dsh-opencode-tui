@@ -241,6 +241,7 @@ export class OcServer implements RouterContext {
   runPrompt(state: SessionState, text: string, opts: { preset?: string }): void {
     // 无 dshSessionId 时复用当前目录的活跃会话，避免每条消息创建新会话
     const resumeId = state.dshSessionId ?? this.currentDshSessionId;
+    ocLog(`[oc-server] runPrompt: ocId=${state.id?.slice(0,12)} state.dshId=${state.dshSessionId?.slice(0,12) ?? "UNDEF"} currentDshId=${this.currentDshSessionId?.slice(0,12) ?? "UNDEF"} resumeId=${resumeId?.slice(0,12) ?? "UNDEF"}`);
     void this.opts
       .onPrompt(
         text,
@@ -274,6 +275,7 @@ export class OcServer implements RouterContext {
     }
     // 更新当前目录活跃会话，后续消息复用
     this.currentDshSessionId = dshSessionId;
+    ocLog(`[oc-server] bindDshSession: ocId=${ocSessionId?.slice(0,12)} dshId=${dshSessionId?.slice(0,12)} currentDshId=${this.currentDshSessionId?.slice(0,12)}`);
   }
 
   /**
