@@ -366,6 +366,8 @@ export async function handleLegacyMisc(
       encodeCwdSlug: encodeCwdSlug(ctx.directory),
       storeSessions: storeInfo,
       storeCount: storeInfo.length,
+      titleCacheKeys: ctx.titleCache.keys().length,
+      titleCacheSample: ctx.titleCache.keys().slice(0, 3),
     });
     return true;
   }
