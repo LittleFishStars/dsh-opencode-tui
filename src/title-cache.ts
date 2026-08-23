@@ -71,13 +71,11 @@ export class SessionTitleCache {
     }
   }
 
-  /** 获取缓存的标题（无缓存或过期返回 undefined）。 */
-  get(dshId: string, mtime: number): string | undefined {
-    const entry = this.map.get(dshId);
-    if (!entry) return undefined;
-    // mtime 不匹配说明文件已更新，缓存过期
-    if (entry.mtime !== mtime) return undefined;
-    return entry.title;
+  /** 获取缓存的标题（无缓存返回 undefined）。 */
+  get(dshId: string, _mtime: number): string | undefined {
+    // 缓存在启动时建立，进程内始终有效（不再校验 mtime，
+    // 因为 DSH agent 可能在后台修改会话文件导致 mtime 变化）
+    return this.map.get(dshId)?.title;
   }
 
   /** 设置缓存标题。 */

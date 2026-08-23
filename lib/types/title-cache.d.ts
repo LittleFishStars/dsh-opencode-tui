@@ -6,8 +6,8 @@ export declare class SessionTitleCache {
     load(): void;
     /** 保存缓存到磁盘。 */
     save(): void;
-    /** 获取缓存的标题（无缓存或过期返回 undefined）。 */
-    get(dshId: string, mtime: number): string | undefined;
+    /** 获取缓存的标题（无缓存返回 undefined）。 */
+    get(dshId: string, _mtime: number): string | undefined;
     /** 设置缓存标题。 */
     set(dshId: string, title: string, mtime: number): void;
     /** 获取所有已缓存的会话 id。 */
