@@ -337,6 +337,9 @@ export class OcServer implements RouterContext {
             const st = await stat(sessionFile);
             createdAt = st.mtimeMs;
           } catch {}
+          // 有活跃会话时只显示活跃会话（避免 TUI 每条消息创建新会话导致列表爆炸）
+          const currentId = this.currentDshSessionId?.startsWith("session-") ? this.currentDshSessionId.slice(8) : this.currentDshSessionId;
+          if (currentId && dshId !== currentId) continue;
           // 查找已有会话：兼容旧格式（session-<uuid>）和新格式（uuid）
           const existing = [...this.store.sessions.values()].find((s) => s.dshSessionId === dshId || s.dshSessionId === `session-${dshId}`);
           if (existing) {
