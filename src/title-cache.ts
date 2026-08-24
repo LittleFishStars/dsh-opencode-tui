@@ -23,19 +23,22 @@ interface TitleEntry {
 interface CacheFile {
   version: number;
   titles: Record<string, TitleEntry>;
+  /** 当前目录 → 活跃 DSH 会话 id（跨进程持久化） */
+  current: Record<string, string>;
 }
 
 const CACHE_VERSION = 1;
 
-/** 解析缓存文件路径：<DSH_HOME>/session-titles.json。 */
+/** 解析缓存文件路径：<DSH_HOME>/session-cache.json。 */
 function cacheFilePath(): string {
   const dshHome = process.env.DSH_HOME ?? join(homedir(), ".dsh");
-  return join(dshHome, "session-titles.json");
+  return join(dshHome, "session-cache.json");
 }
 
-/** 会话标题缓存：内存 + 持久化。 */
+/** 会话标题缓存 + 当前活跃会话持久化。 */
 export class SessionTitleCache {
   private map = new Map<string, TitleEntry>();
+  private currentMap = new Map<string, string>();
   private loaded = false;
 
   /** 从磁盘加载缓存。 */
@@ -51,6 +54,9 @@ export class SessionTitleCache {
       for (const [id, entry] of Object.entries(parsed.titles ?? {})) {
         this.map.set(id, entry);
       }
+      for (const [dir, sid] of Object.entries(parsed.current ?? {})) {
+        this.currentMap.set(dir, sid);
+      }
     } catch {
       /* 缓存损坏时忽略，重新建立 */
     }
@@ -64,6 +70,7 @@ export class SessionTitleCache {
       const data: CacheFile = {
         version: CACHE_VERSION,
         titles: Object.fromEntries(this.map),
+        current: Object.fromEntries(this.currentMap),
       };
       writeFileSync(path, JSON.stringify(data, null, 2), "utf-8");
     } catch {
@@ -72,9 +79,7 @@ export class SessionTitleCache {
   }
 
   /** 获取缓存的标题（无缓存返回 undefined）。 */
-  get(dshId: string, _mtime: number): string | undefined {
-    // 缓存在启动时建立，进程内始终有效（不再校验 mtime，
-    // 因为 DSH agent 可能在后台修改会话文件导致 mtime 变化）
+  get(dshId: string): string | undefined {
     return this.map.get(dshId)?.title;
   }
 
@@ -98,5 +103,22 @@ export class SessionTitleCache {
       }
     }
     if (removed > 0) this.save();
+  }
+
+  /** 获取当前目录活跃的 DSH 会话 id。 */
+  getCurrent(directory: string): string | undefined {
+    return this.currentMap.get(directory);
+  }
+
+  /** 设置当前目录活跃的 DSH 会话 id。 */
+  setCurrent(directory: string, dshSessionId: string): void {
+    this.currentMap.set(directory, dshSessionId);
+    this.save();
+  }
+
+  /** 清除当前目录活跃会话。 */
+  clearCurrent(directory: string): void {
+    this.currentMap.delete(directory);
+    this.save();
   }
 }

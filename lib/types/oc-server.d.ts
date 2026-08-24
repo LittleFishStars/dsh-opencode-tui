@@ -79,8 +79,6 @@ export declare class OcServer implements RouterContext {
     private http;
     readonly titleCache: SessionTitleCache;
     private port;
-    /** 当前目录活跃的 DSH 会话 id：无 resumeSessionId 时复用，避免每条消息创建新会话 */
-    private currentDshSessionId;
     constructor(ctx: Context, opts: OcServerOptions);
     start(): Promise<number>;
     get url(): string;

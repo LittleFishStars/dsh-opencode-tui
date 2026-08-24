@@ -108,8 +108,6 @@ export class OcServer implements RouterContext {
   private http: ReturnType<typeof createServer>;
   readonly titleCache = new SessionTitleCache();
   private port = 0;
-  /** 当前目录活跃的 DSH 会话 id：无 resumeSessionId 时复用，避免每条消息创建新会话 */
-  private currentDshSessionId: string | undefined;
 
   constructor(ctx: Context, opts: OcServerOptions) {
     this.ctx = ctx;
@@ -240,8 +238,8 @@ export class OcServer implements RouterContext {
   /** 触发 DSH agent（preset/model 随消息传递）并绑定会话、通知变更。 */
   runPrompt(state: SessionState, text: string, opts: { preset?: string }): void {
     // 无 dshSessionId 时复用当前目录的活跃会话，避免每条消息创建新会话
-    const resumeId = state.dshSessionId ?? this.currentDshSessionId;
-    ocLog(`[oc-server] runPrompt: ocId=${state.id?.slice(0,12)} state.dshId=${state.dshSessionId?.slice(0,12) ?? "UNDEF"} currentDshId=${this.currentDshSessionId?.slice(0,12) ?? "UNDEF"} resumeId=${resumeId?.slice(0,12) ?? "UNDEF"}`);
+    const resumeId = state.dshSessionId ?? this.titleCache.getCurrent(this.directory);
+    ocLog(`[oc-server] runPrompt: ocId=${state.id?.slice(0,12)} state.dshId=${state.dshSessionId?.slice(0,12) ?? "UNDEF"} currentDshId=${this.titleCache.getCurrent(this.directory)?.slice(0,12) ?? "UNDEF"} resumeId=${resumeId?.slice(0,12) ?? "UNDEF"}`);
     void this.opts
       .onPrompt(
         text,
@@ -254,6 +252,20 @@ export class OcServer implements RouterContext {
       )
       .then((dshId) => {
         if (dshId) this.bindDshSession(state.id, dshId);
+      })
+      .catch((error) => {
+        // 恢复会话失败（session 不存在）→ 清除缓存并重试（创建新会话）
+        ocLog(`[oc-server] runPrompt resume failed: ${error instanceof Error ? error.message : String(error)}, retrying without resume`);
+        this.titleCache.clearCurrent(this.directory);
+        void this.opts
+          .onPrompt(
+            text,
+            { resumeSessionId: undefined, preset: opts.preset, model: state.currentModel },
+            { onSession: (dshId) => this.bindDshSession(state.id, dshId) },
+          )
+          .then((dshId) => {
+            if (dshId) this.bindDshSession(state.id, dshId);
+          });
       });
     this.store.touchSession(state);
   }
@@ -274,8 +286,8 @@ export class OcServer implements RouterContext {
       state.updatedAt = Date.now();
     }
     // 更新当前目录活跃会话，后续消息复用
-    this.currentDshSessionId = dshSessionId;
-    ocLog(`[oc-server] bindDshSession: ocId=${ocSessionId?.slice(0,12)} dshId=${dshSessionId?.slice(0,12)} currentDshId=${this.currentDshSessionId?.slice(0,12)}`);
+    this.titleCache.setCurrent(this.directory, dshSessionId);
+    ocLog(`[oc-server] bindDshSession: ocId=${ocSessionId?.slice(0,12)} dshId=${dshSessionId?.slice(0,12)} currentDshId=${this.titleCache.getCurrent(this.directory)?.slice(0,12)}`);
   }
 
   /**
@@ -295,8 +307,8 @@ export class OcServer implements RouterContext {
       }
     }
     // 删除的是当前活跃会话时，清除追踪以便后续消息创建新会话
-    if (state.dshSessionId === this.currentDshSessionId) {
-      this.currentDshSessionId = undefined;
+    if (state.dshSessionId === this.titleCache.getCurrent(this.directory)) {
+      this.titleCache.clearCurrent(this.directory);
     }
     return this.store.removeSession(sessionId);
   }
@@ -345,15 +357,15 @@ export class OcServer implements RouterContext {
           candidates.push({ dshId, ocId, createdAt });
         }
       }
-      // 过滤：有活跃会话只显示活跃会话；否则只显示最近 5 个（对齐 web 界面）
-      const currentId = this.currentDshSessionId?.startsWith("session-") ? this.currentDshSessionId.slice(8) : this.currentDshSessionId;
-      let filtered = candidates;
-      if (currentId) {
-        filtered = candidates.filter((c) => c.dshId === currentId);
-      } else {
-        filtered = candidates.sort((a, b) => b.createdAt - a.createdAt).slice(0, 5);
+      // 补充：内存中已绑定 dshSessionId 但不在文件系统中的会话（DSH 会话可能未持久化到磁盘）
+      for (const state of this.store.sessions.values()) {
+        if (!state.dshSessionId) continue;
+        const dshId = state.dshSessionId.startsWith("session-") ? state.dshSessionId.slice(8) : state.dshSessionId;
+        if (candidates.some((c) => c.dshId === dshId)) continue;
+        candidates.push({ dshId, ocId: ocIdFromDsh(dshId), createdAt: state.createdAt });
       }
-      for (const c of filtered) {
+      // 暂不过滤：显示全部会话（用户可通过 DELETE 清理不需要的）
+      for (const c of candidates) {
         // 查找已有会话：兼容旧格式（session-<uuid>）和新格式（uuid）
         const existing = [...this.store.sessions.values()].find((s) => s.dshSessionId === c.dshId || s.dshSessionId === `session-${c.dshId}`);
         if (existing) {
@@ -364,7 +376,7 @@ export class OcServer implements RouterContext {
           const state = this.store.getOrCreateSession(c.ocId, this.directory);
           state.dshSessionId = c.dshId;
           // 从缓存读取标题（启动时已后台加载）；缓存未命中则为空
-          const cachedTitle = this.titleCache.get(c.dshId, c.createdAt);
+          const cachedTitle = this.titleCache.get(c.dshId);
           if (cachedTitle === undefined) {
             ocLog(`[oc-server] DIAG title cache MISS: dshId=${c.dshId.slice(0,8)} mtime=${c.createdAt} cacheKeys=${this.titleCache.keys().length}`);
           }
@@ -407,7 +419,7 @@ export class OcServer implements RouterContext {
             continue;
           }
           // 缓存命中且 mtime 未变则跳过
-          if (this.titleCache.get(dshId, mtime) !== undefined) continue;
+          if (this.titleCache.get(dshId) !== undefined) continue;
           pending.push({ dshId, file: sessionFile, mtime });
         }
       }
