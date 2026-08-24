@@ -215,7 +215,8 @@ function apply(ctx: Context, config: PluginConfig) {
       // 否则释放旧 agent 后 resume/新建。不能对 live 会话 resume（DSH
       // persistence 拒绝 "cannot prepare session while it is live"）。
       const activeSid = activeManager?.current?.sessionId;
-      dbgLog(`[plugin] onPrompt: resumeId=${opts.resumeSessionId?.slice(0,12) ?? "UNDEF"} activeSid=${activeSid?.slice(0,12) ?? "UNDEF"} reuse=${activeSid === opts.resumeSessionId}`);
+      const canReuse = !!activeManager?.current && activeSid === opts.resumeSessionId;
+      dbgLog(`[plugin] onPrompt: resumeId=${opts.resumeSessionId?.slice(0,12) ?? "UNDEF"} activeSid=${activeSid?.slice(0,12) ?? "UNDEF"} canReuse=${canReuse}`);
       if (activeManager?.current && activeManager.current.sessionId === opts.resumeSessionId) {
         const owned = activeManager.current;
         hooks.onSession(owned.sessionId);
